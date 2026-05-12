@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -22,14 +23,27 @@ from av_common import (
     today_monday,
 )
 
-# --- DRAFT CONFIGURATION ---
-DRAFTS_DIR = Path("reports_drafts")
-DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
+# --- LOCAL RUNTIME STORAGE ---
+# GitHub will not show empty folders, and Streamlit Cloud containers start fresh.
+# These folders are created at runtime in the same folder as reporter.py/master.py.
+APP_DIR = Path(__file__).resolve().parent
+DRAFTS_DIR = APP_DIR / "reports_drafts"
+
+def ensure_runtime_dirs() -> None:
+    for directory in (DRAFTS_DIR, OUTBOX_DIR):
+        Path(directory).mkdir(parents=True, exist_ok=True)
+
+def safe_slug(value) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_-]+", "_", text)
+    return text.strip("_") or "blank"
 
 def get_draft_path(pm, div, date_val):
-    safe_pm = str(pm).strip().replace(" ", "_").lower()
-    safe_div = str(div).strip().replace(" ", "_").lower()
+    safe_pm = safe_slug(pm)
+    safe_div = safe_slug(div)
     return DRAFTS_DIR / f"draft_{date_val}_{safe_div}_{safe_pm}.json"
+
+ensure_runtime_dirs()
 
 st.set_page_config(page_title="AV PM Weekly Reporter", page_icon="❖", layout="wide")
 
@@ -336,9 +350,16 @@ if submit_edits:
     st.session_state.tracker_df.update(df3.drop(columns=["member_name"]))
     
     if pm_name.strip():
-        with open(draft_path, "w") as f:
-            json.dump(st.session_state.tracker_df.to_dict(orient="records"), f, indent=4)
-        st.session_state.show_success = True
+        try:
+            ensure_runtime_dirs()
+            draft_path.parent.mkdir(parents=True, exist_ok=True)
+            draft_path.write_text(
+                json.dumps(st.session_state.tracker_df.to_dict(orient="records"), indent=4),
+                encoding="utf-8",
+            )
+            st.session_state.show_success = True
+        except Exception as exc:
+            st.session_state.show_save_error = str(exc)
     else:
         st.session_state.show_warning = True
         
@@ -350,6 +371,8 @@ if st.session_state.pop("show_success", False):
     st.success("Changes saved successfully to your local draft!")
 if st.session_state.pop("show_warning", False):
     st.warning("Please enter your PM Name in the sidebar to backup your drafts locally.")
+if st.session_state.get("show_save_error"):
+    st.error(f"Draft save failed: {st.session_state.pop('show_save_error')}")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -405,13 +428,17 @@ if save_clicked:
     elif preview.empty:
         st.error("No hay miembros válidos para exportar.")
     else:
-        path = save_report(report)
-        st.success(f"Saved: {path.name}")
-        st.info("For the master dashboard, copy this file to `reports_inbox` if it came from another computer.")
-        
-        # Clear the draft file now that it's officially saved!
-        if draft_path.exists():
-            os.remove(draft_path)
+        try:
+            ensure_runtime_dirs()
+            path = save_report(report)
+            st.success(f"Saved: {path.name}")
+            st.info("Saved into the runtime `reports_outbox` folder. For permanent multi-user storage, the next step is Google Sheets/Supabase; this local file storage is only a temporary hosted test.")
+
+            # Clear the draft file now that it's officially saved.
+            if draft_path.exists():
+                os.remove(draft_path)
+        except Exception as exc:
+            st.error(f"Final export failed: {exc}")
 
 json_bytes = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
 st.download_button(
