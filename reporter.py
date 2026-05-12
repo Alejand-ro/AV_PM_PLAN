@@ -463,18 +463,59 @@ with st.sidebar:
     pm_name = st.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
     division = st.selectbox("Division", DIVISIONS, index=0)
 
-    center_monday = today_monday()
-    week_options = build_week_options(center_monday, weeks_back=12, weeks_forward=8)
-    default_week_index = week_options.index(center_monday) if center_monday in week_options else 12
-    week_start = st.selectbox(
-        "Report week",
-        options=week_options,
-        index=default_week_index,
-        format_func=week_range_label,
-        help="Pick the Monday-Friday work week being reported. Monday meetings usually review the previous week and plan the current week.",
+    # Calendar-style week picker. The PM clicks any date in a calendar, and the
+    # app converts that date into the Monday-Friday work week. This keeps the UI
+    # future-proof: PMs can jump to any previous or future week without a fixed
+    # dropdown range becoming outdated.
+    current_monday = today_monday()
+    if "report_calendar_date" not in st.session_state:
+        st.session_state.report_calendar_date = current_monday
+
+    st.markdown("**Work week calendar**")
+    nav_prev, nav_today, nav_next = st.columns(3)
+    with nav_prev:
+        if st.button("← Prev", use_container_width=True):
+            st.session_state.report_calendar_date = monday_for(st.session_state.report_calendar_date) - timedelta(days=7)
+            st.rerun()
+    with nav_today:
+        if st.button("This week", use_container_width=True):
+            st.session_state.report_calendar_date = current_monday
+            st.rerun()
+    with nav_next:
+        if st.button("Next →", use_container_width=True):
+            st.session_state.report_calendar_date = monday_for(st.session_state.report_calendar_date) + timedelta(days=7)
+            st.rerun()
+
+    selected_calendar_date = st.date_input(
+        "Click any day inside the work week",
+        key="report_calendar_date",
+        help="Pick any date. The app automatically stores the Monday-Friday week containing that date.",
     )
+    if isinstance(selected_calendar_date, tuple):
+        selected_calendar_date = selected_calendar_date[0]
+
+    week_start = monday_for(selected_calendar_date)
     week_end = week_start + timedelta(days=4)
-    st.caption(f"Selected work week: **{week_range_label(week_start)}**")
+
+    st.markdown(
+        f"""
+        <div style="
+            margin-top: 10px;
+            padding: 14px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: #0f172a;
+        ">
+            <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: .12em; font-weight: 900;">Selected work week</div>
+            <div style="font-size: 16px; color: #f8fafc; font-weight: 850; margin-top: 4px;">{week_range_label(week_start)}</div>
+            <div style="font-size: 12px; color: #cbd5e1; margin-top: 6px;">Stored as week_start = {week_start.isoformat()}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if selected_calendar_date.weekday() >= 5:
+        st.caption("Weekend selected; the report is still attached to the Monday-Friday work week containing that weekend.")
+    st.caption("Monday meetings can review the selected previous week, then PMs can switch to the next/current week to save upcoming plans.")
     st.divider()
     st.caption("Score weights")
     for name, weight in METRIC_WEIGHTS.items():
