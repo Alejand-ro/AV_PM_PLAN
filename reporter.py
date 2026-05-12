@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import gspread
@@ -25,14 +26,36 @@ from av_common import (
 )
 
 # --- DRAFT CONFIGURATION ---
+# Drafts are now saved in the same Google spreadsheet, inside a separate
+# worksheet/tab named "drafts" by default. This keeps PM work recoverable
+# across computers and browser sessions. A local folder is kept only as a
+# fallback if the cloud save fails while testing locally.
 APP_DIR = Path(__file__).resolve().parent
 DRAFTS_DIR = APP_DIR / "reports_drafts"
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
 
+def safe_key_part(value) -> str:
+    return str(value or "").strip().lower()
+
 def get_draft_path(pm, div, date_val):
-    safe_pm = str(pm).strip().replace(" ", "_").lower()
-    safe_div = str(div).strip().replace(" ", "_").lower()
+    safe_pm = safe_key_part(pm).replace(" ", "_") or "blank_pm"
+    safe_div = safe_key_part(div).replace(" ", "_") or "blank_division"
     return DRAFTS_DIR / f"draft_{date_val}_{safe_div}_{safe_pm}.json"
+
+def cloud_draft_key(pm_name: str, division: str, week_start) -> str:
+    return "|".join([str(week_start), safe_key_part(division), safe_key_part(pm_name)])
+
+def monday_for(any_date):
+    return any_date - timedelta(days=any_date.weekday())
+
+def week_range_label(monday_date) -> str:
+    friday = monday_date + timedelta(days=4)
+    if monday_date.year == friday.year:
+        return f"{monday_date:%b %d} – {friday:%b %d, %Y}"
+    return f"{monday_date:%b %d, %Y} – {friday:%b %d, %Y}"
+
+def build_week_options(center_monday, weeks_back: int = 12, weeks_forward: int = 8):
+    return [center_monday + timedelta(weeks=i) for i in range(-weeks_back, weeks_forward + 1)]
 
 
 # --- GOOGLE SHEETS CONFIGURATION ---
@@ -81,6 +104,16 @@ SHEET_COLUMNS = [
     "flags",
 ]
 
+DRAFT_COLUMNS = [
+    "draft_key",
+    "week_start",
+    "week_end",
+    "division",
+    "pm_name",
+    "updated_at",
+    "draft_json",
+]
+
 
 def google_sheet_ready() -> tuple[bool, str]:
     missing = []
@@ -94,7 +127,7 @@ def google_sheet_ready() -> tuple[bool, str]:
 
 
 @st.cache_resource(show_spinner=False)
-def get_worksheet():
+def get_spreadsheet():
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Missing [gcp_service_account] in Streamlit Secrets.")
 
@@ -104,27 +137,111 @@ def get_worksheet():
 
     sheet_id = st.secrets.get("SHEET_ID", "").strip() if st.secrets.get("SHEET_ID") else ""
     sheet_name = st.secrets.get("SHEET_NAME", "AV PM Reports Database")
-    worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
+    return client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
 
-    spreadsheet = client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
+
+def get_or_create_worksheet(title: str, columns: list[str], rows: int = 1000):
+    spreadsheet = get_spreadsheet()
     try:
-        worksheet = spreadsheet.worksheet(worksheet_name)
+        worksheet = spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(SHEET_COLUMNS) + 5)
-    ensure_sheet_headers(worksheet)
+        worksheet = spreadsheet.add_worksheet(title=title, rows=rows, cols=len(columns) + 5)
+    ensure_headers(worksheet, columns)
     return worksheet
 
 
-def ensure_sheet_headers(worksheet) -> list[str]:
+@st.cache_resource(show_spinner=False)
+def get_worksheet():
+    worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
+    return get_or_create_worksheet(worksheet_name, SHEET_COLUMNS, rows=2000)
+
+
+@st.cache_resource(show_spinner=False)
+def get_draft_worksheet():
+    draft_worksheet_name = st.secrets.get("DRAFT_WORKSHEET_NAME", "drafts")
+    return get_or_create_worksheet(draft_worksheet_name, DRAFT_COLUMNS, rows=1000)
+
+
+def ensure_headers(worksheet, required_columns: list[str]) -> list[str]:
     existing = worksheet.row_values(1)
     existing = [str(h).strip() for h in existing if str(h).strip()]
     headers = list(existing)
-    for col in SHEET_COLUMNS:
+    for col in required_columns:
         if col not in headers:
             headers.append(col)
     if headers != existing:
         worksheet.update("1:1", [headers])
     return headers
+
+
+def ensure_sheet_headers(worksheet) -> list[str]:
+    return ensure_headers(worksheet, SHEET_COLUMNS)
+
+
+def ensure_draft_headers(worksheet) -> list[str]:
+    return ensure_headers(worksheet, DRAFT_COLUMNS)
+
+
+def normalize_tracker_df(records: list[dict], template_df: pd.DataFrame) -> pd.DataFrame:
+    if not records:
+        return template_df.copy()
+    df = pd.DataFrame(records)
+    for col in template_df.columns:
+        if col not in df.columns:
+            df[col] = 0 if col not in ["member_name", "role", "notes"] else ""
+    return df.reindex(columns=template_df.columns).fillna("")
+
+
+def load_cloud_draft(pm_name: str, division: str, week_start) -> list[dict] | None:
+    if not pm_name.strip():
+        return None
+    worksheet = get_draft_worksheet()
+    rows = worksheet.get_all_records()
+    key = cloud_draft_key(pm_name, division, week_start)
+    for row in rows:
+        if str(row.get("draft_key", "")).strip() == key:
+            raw_json = row.get("draft_json", "")
+            if not raw_json:
+                return None
+            return json.loads(raw_json)
+    return None
+
+
+def delete_cloud_draft(pm_name: str, division: str, week_start) -> int:
+    if not pm_name.strip():
+        return 0
+    worksheet = get_draft_worksheet()
+    key = cloud_draft_key(pm_name, division, week_start)
+    rows = worksheet.get_all_records()
+    to_delete = []
+    for offset, row in enumerate(rows, start=2):
+        if str(row.get("draft_key", "")).strip() == key:
+            to_delete.append(offset)
+    for row_number in reversed(to_delete):
+        worksheet.delete_rows(row_number)
+    return len(to_delete)
+
+
+def save_cloud_draft(pm_name: str, division: str, week_start, rows: list[dict]) -> tuple[bool, str]:
+    if not pm_name.strip():
+        return False, "Please enter your PM name before saving a cloud draft."
+    worksheet = get_draft_worksheet()
+    headers = ensure_draft_headers(worksheet)
+    deleted = delete_cloud_draft(pm_name, division, week_start)
+    week_end = week_start + timedelta(days=4)
+    draft_row = {
+        "draft_key": cloud_draft_key(pm_name, division, week_start),
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "division": division,
+        "pm_name": pm_name,
+        "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "draft_json": json.dumps(rows, ensure_ascii=False),
+    }
+    worksheet.append_row([draft_row.get(header, "") for header in headers], value_input_option="USER_ENTERED")
+    if deleted:
+        return True, f"Cloud draft updated. Replaced {deleted} previous draft row(s)."
+    return True, "Cloud draft saved. You can reopen this PM/division/week later from any computer."
 
 
 def report_records_for_sheet(report: dict, input_rows: list[dict]) -> list[dict]:
@@ -345,11 +462,19 @@ with st.sidebar:
     st.header("Report setup")
     pm_name = st.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
     division = st.selectbox("Division", DIVISIONS, index=0)
-    week_start = st.date_input("Week starting Monday", value=today_monday())
-    if isinstance(week_start, tuple):
-        week_start = week_start[0]
-    if week_start.weekday() != 0:
-        st.warning("La fecha seleccionada no es lunes. La app la acepta, pero para tracking semanal conviene usar lunes.")
+
+    center_monday = today_monday()
+    week_options = build_week_options(center_monday, weeks_back=12, weeks_forward=8)
+    default_week_index = week_options.index(center_monday) if center_monday in week_options else 12
+    week_start = st.selectbox(
+        "Report week",
+        options=week_options,
+        index=default_week_index,
+        format_func=week_range_label,
+        help="Pick the Monday-Friday work week being reported. Monday meetings usually review the previous week and plan the current week.",
+    )
+    week_end = week_start + timedelta(days=4)
+    st.caption(f"Selected work week: **{week_range_label(week_start)}**")
     st.divider()
     st.caption("Score weights")
     for name, weight in METRIC_WEIGHTS.items():
@@ -361,6 +486,7 @@ legend_html = "".join(
 )
 st.markdown(f'<div class="glass"><b>Official division legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
 
+sheet_ok, sheet_msg = google_sheet_ready()
 
 # --- DATA INITIALIZATION & DRAFT LOADING ---
 init_df = pd.DataFrame(empty_input_rows())
@@ -372,19 +498,39 @@ if "communication_score" not in init_df.columns:
 current_draft_key = f"{pm_name}_{division}_{week_start}"
 draft_path = get_draft_path(pm_name, division, week_start)
 
-# Load draft safely
+# Load draft safely. Cloud draft is preferred. Local draft is only fallback.
 if "tracker_df" not in st.session_state or st.session_state.get("last_draft_key") != current_draft_key:
-    if pm_name.strip() and draft_path.exists():
+    draft_records = None
+    st.session_state.pop("loaded_cloud_draft_message", None)
+    st.session_state.pop("cloud_draft_load_error", None)
+
+    if pm_name.strip() and sheet_ok:
         try:
-            with open(draft_path, "r") as f:
+            draft_records = load_cloud_draft(pm_name, division, week_start)
+            if draft_records is not None:
+                st.session_state.loaded_cloud_draft_message = f"Loaded saved cloud draft for {division}, {week_range_label(week_start)}."
+        except Exception as exc:
+            st.session_state.cloud_draft_load_error = str(exc)
+
+    if draft_records is not None:
+        st.session_state.tracker_df = normalize_tracker_df(draft_records, init_df)
+    elif pm_name.strip() and draft_path.exists():
+        try:
+            with open(draft_path, "r", encoding="utf-8") as f:
                 draft_data = json.load(f)
-            st.session_state.tracker_df = pd.DataFrame(draft_data)
+            st.session_state.tracker_df = normalize_tracker_df(draft_data, init_df)
+            st.session_state.loaded_cloud_draft_message = "Loaded local fallback draft. Save once to move it into the cloud draft tab."
         except Exception:
             st.session_state.tracker_df = init_df.copy()
     else:
         st.session_state.tracker_df = init_df.copy()
     
     st.session_state["last_draft_key"] = current_draft_key
+
+if st.session_state.get("loaded_cloud_draft_message"):
+    st.info(st.session_state.pop("loaded_cloud_draft_message"))
+if st.session_state.get("cloud_draft_load_error"):
+    st.warning(f"Could not load cloud draft: {st.session_state.pop('cloud_draft_load_error')}")
 
 # --- COLUMN CONFIGURATIONS ---
 col_config_base = {
@@ -441,7 +587,7 @@ with c_help:
         * **Notes:** Blockers, praise, or internal flags.
         """)
 
-st.info("Type freely in any tab. The grids will NOT refresh or drop keystrokes until you click the save button below.")
+st.info("Type freely in any tab. Click Save Progress to store the draft in Google Sheets by PM + division + selected week.")
 
 # Wrapping the editors in a form stops Streamlit from rerunning the app while you type
 with st.form("weekly_data_form"):
@@ -474,7 +620,7 @@ with st.form("weekly_data_form"):
 
     st.markdown("<br>", unsafe_allow_html=True)
     # The explicit save button to lock in edits
-    submit_edits = st.form_submit_button("☑ Save Progress & Update Preview Below", use_container_width=True)
+    submit_edits = st.form_submit_button("☑ Save Cloud Draft & Update Preview Below", use_container_width=True)
 
 # Process the save event AFTER the form is submitted
 if submit_edits:
@@ -486,13 +632,25 @@ if submit_edits:
     st.session_state.tracker_df.update(df3.drop(columns=["member_name"]))
     
     if pm_name.strip():
-        try:
-            draft_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(draft_path, "w", encoding="utf-8") as f:
-                json.dump(st.session_state.tracker_df.to_dict(orient="records"), f, indent=4)
-            st.session_state.show_success = True
-        except Exception as exc:
-            st.session_state.show_save_error = str(exc)
+        draft_records_to_save = st.session_state.tracker_df.to_dict(orient="records")
+        if sheet_ok:
+            try:
+                ok, message = save_cloud_draft(pm_name, division, week_start, draft_records_to_save)
+                if ok:
+                    st.session_state.show_success = message
+                else:
+                    st.session_state.show_warning = message
+            except Exception as exc:
+                # Local fallback so they do not lose work if Google Sheets briefly fails.
+                try:
+                    draft_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(draft_path, "w", encoding="utf-8") as f:
+                        json.dump(draft_records_to_save, f, indent=4)
+                    st.session_state.show_save_error = f"Cloud draft failed, but local fallback was saved: {exc}"
+                except Exception as local_exc:
+                    st.session_state.show_save_error = f"Cloud draft failed: {exc}; local fallback also failed: {local_exc}"
+        else:
+            st.session_state.show_save_error = "Google Sheets is not configured, so the cloud draft could not be saved."
     else:
         st.session_state.show_warning = True
         
@@ -500,10 +658,12 @@ if submit_edits:
     st.rerun()
 
 # Display the save messages outside the rerun cycle
-if st.session_state.pop("show_success", False):
-    st.success("Changes saved successfully to your local draft!")
-if st.session_state.pop("show_warning", False):
-    st.warning("Please enter your PM Name in the sidebar to backup your drafts locally.")
+success_message = st.session_state.pop("show_success", False)
+if success_message:
+    st.success(success_message if isinstance(success_message, str) else "Changes saved successfully to your cloud draft.")
+warning_message = st.session_state.pop("show_warning", False)
+if warning_message:
+    st.warning(warning_message if isinstance(warning_message, str) else "Please enter your PM Name in the sidebar to save your cloud draft.")
 if st.session_state.get("show_save_error"):
     st.error(f"Draft save failed: {st.session_state.pop('show_save_error')}")
 
@@ -547,9 +707,8 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="glass">', unsafe_allow_html=True)
 st.subheader("Submit to Google Sheets")
-st.write("Final submission writes directly to the shared Google Sheet database. The JSON download remains only as a backup copy.")
+st.write("Final submission writes directly to the shared Google Sheet database. Drafts are saved to the separate `drafts` tab and final reports go to the `reports` tab.")
 
-sheet_ok, sheet_msg = google_sheet_ready()
 if sheet_ok:
     st.success(sheet_msg)
 else:
@@ -583,7 +742,13 @@ if save_clicked:
                 st.info(f"Replaced {rows_deleted} old row(s) for this PM/division/week.")
             st.cache_data.clear()
 
-            # Clear the local draft file now that it is officially submitted.
+            # Clear cloud/local drafts now that it is officially submitted.
+            try:
+                deleted_drafts = delete_cloud_draft(pm_name, division, week_start)
+                if deleted_drafts:
+                    st.info(f"Cleared {deleted_drafts} cloud draft row(s) for this PM/division/week.")
+            except Exception as draft_exc:
+                st.warning(f"Submitted successfully, but cloud draft cleanup failed: {draft_exc}")
             if draft_path.exists():
                 os.remove(draft_path)
         except Exception as exc:
