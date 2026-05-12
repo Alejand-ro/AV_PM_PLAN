@@ -26,6 +26,11 @@ from av_common import (
 
 st.set_page_config(page_title="AV Admin Command", page_icon="⚙️", layout="wide")
 
+# GitHub does not store empty folders, and Streamlit Cloud starts with a fresh
+# container. Create the runtime folders that this local-JSON MVP reads from.
+for _runtime_dir in (INBOX_DIR, OUTBOX_DIR):
+    Path(_runtime_dir).mkdir(parents=True, exist_ok=True)
+
 COLOR_MAP = DIVISION_COLORS
 STATUS_COLORS = {"Healthy": "#22c55e", "Watch": "#eab308", "Critical": "#ef4444"}
 
@@ -249,7 +254,7 @@ if "communication_score" not in df.columns:
 else:
     df["communication_score"] = df["communication_score"].fillna(3.0)
 
-available_divisions = sorted([d for d in df["division"].unique() if pd.notna(d)])
+available_divisions = sorted([d for d in df["division"].unique() if pd.notna(d)]) if "division" in df.columns else []
 
 with st.sidebar:
     st.header("⚙️ Data Configuration")
@@ -282,7 +287,7 @@ else:
     df["communication_score"] = df["communication_score"].fillna(3.0)
 
 if df.empty:
-    st.warning("No data found. Please add JSON reports to the inbox or outbox directories.")
+    st.warning("No data found yet. The app created reports_inbox and reports_outbox automatically, but no JSON reports are currently available in this Streamlit runtime.")
     st.stop()
 
 # -----------------------------------------------------------------------------
