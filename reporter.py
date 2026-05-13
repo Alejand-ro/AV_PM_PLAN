@@ -26,10 +26,6 @@ from av_common import (
 )
 
 # --- DRAFT CONFIGURATION ---
-# Drafts are now saved in the same Google spreadsheet, inside a separate
-# worksheet/tab named "drafts" by default. This keeps PM work recoverable
-# across computers and browser sessions. A local folder is kept only as a
-# fallback if the cloud save fails while testing locally.
 APP_DIR = Path(__file__).resolve().parent
 DRAFTS_DIR = APP_DIR / "reports_drafts"
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,6 +43,8 @@ def cloud_draft_key(competition: str, pm_name: str, division: str, week_start) -
     return "|".join([safe_key_part(competition), str(week_start), safe_key_part(division), safe_key_part(pm_name)])
 
 def monday_for(any_date):
+    if hasattr(any_date, "date"):
+        any_date = any_date.date()
     return any_date - timedelta(days=any_date.weekday())
 
 def week_range_label(monday_date) -> str:
@@ -55,16 +53,7 @@ def week_range_label(monday_date) -> str:
         return f"{monday_date:%b %d} – {friday:%b %d, %Y}"
     return f"{monday_date:%b %d, %Y} – {friday:%b %d, %Y}"
 
-def build_week_options(center_monday, weeks_back: int = 12, weeks_forward: int = 8):
-    return [center_monday + timedelta(weeks=i) for i in range(-weeks_back, weeks_forward + 1)]
-
-
 # --- GOOGLE SHEETS CONFIGURATION ---
-# Required Streamlit secrets:
-# SHEET_NAME = "AV PM Reports Database"
-# WORKSHEET_NAME = "reports"
-# [gcp_service_account]
-# ...paste service account JSON fields here...
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -187,8 +176,10 @@ def ensure_draft_headers(worksheet) -> list[str]:
 
 def normalize_tracker_df(records: list[dict], template_df: pd.DataFrame) -> pd.DataFrame:
     if not records:
-        return template_df.copy()
-    df = pd.DataFrame(records)
+        df = template_df.copy()
+    else:
+        df = pd.DataFrame(records)
+        
     for col in template_df.columns:
         if col not in df.columns:
             df[col] = 0 if col not in ["member_name", "role", "notes"] else ""
@@ -257,7 +248,6 @@ def save_cloud_draft(competition: str, pm_name: str, division: str, week_start, 
 
 
 def report_records_for_sheet(report: dict, input_rows: list[dict], competition: str) -> list[dict]:
-    """Return one Google Sheets row per valid member record."""
     valid_input_rows = [r for r in input_rows if str(r.get("member_name", "")).strip()]
     records = []
     for idx, record in enumerate(report.get("records", [])):
@@ -274,7 +264,6 @@ def report_records_for_sheet(report: dict, input_rows: list[dict], competition: 
 
 
 def delete_existing_rows(worksheet, *, competition: str, pm_name: str, division: str, week_start: str) -> int:
-    """Delete previous rows for the same PM/division/week/competition, from bottom to top."""
     rows = worksheet.get_all_records()
     to_delete = []
     target_comp = str(competition).strip().lower()
@@ -317,38 +306,65 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
         worksheet.append_rows(values, value_input_option="USER_ENTERED")
     return len(values), deleted
 
+
 st.set_page_config(page_title="AV PM Weekly Reporter", page_icon="❖", layout="wide")
 
+# -----------------------------------------------------------------------------
+# COMPETITION STATE INITIALIZATION
+# -----------------------------------------------------------------------------
+if "competition" not in st.session_state:
+    st.session_state.competition = "Mars"
+
+# Handle Competition Select (Sync with session state)
+st.markdown('<div class="glass" style="margin-bottom: 18px; padding: 16px 24px;">', unsafe_allow_html=True)
+st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 16px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
+
+# Select mode
+comp_choice = st.radio(
+    "Competition Program",
+    options=["Mars Mission", "Luna Mission"],
+    index=0 if st.session_state.competition == "Mars" else 1,
+    horizontal=True,
+    label_visibility="collapsed",
+    help="Select which competition program this weekly report belongs to."
+)
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.session_state.competition = "Mars" if comp_choice == "Mars Mission" else "Luna"
+competition = st.session_state.competition
+
+# Dynamic Logo and Colors based on mode
+av_a_color = "#ef4444" if competition == "Mars" else "#e2e8f0"
+av_a_shadow = "#7f1d1d" if competition == "Mars" else "#64748b"
+
 st.markdown(
-    """
+    f"""
 <style>
-    :root {
+    :root {{
         --bg-dark: #000000;
         --panel: #1e293b;
         --ink: #f8fafc;
         --muted: #94a3b8;
         --line: rgba(255, 255, 255, 0.12);
         --shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-    }
+    }}
     
-    /* Elegant Dark Gradient Background - Fading to Black */
-    [data-testid="stAppViewContainer"] {
+    [data-testid="stAppViewContainer"] {{
         background: radial-gradient(circle at top, #1e293b 0%, #000000 100%);
         background-attachment: fixed;
         color: var(--ink);
-    }
+    }}
     
-    [data-testid="stHeader"] { background: rgba(15, 23, 42, 0); }
+    [data-testid="stHeader"] {{ background: rgba(15, 23, 42, 0); }}
     
-    /* Sidebar Gradient - Slate Blue to Cool Dark Grey */
-    [data-testid="stSidebar"] {
+    [data-testid="stSidebar"] {{
         background: linear-gradient(180deg, #1e293b 0%, #111827 100%);
         border-right: 1px solid var(--line);
-    }
+    }}
     
-    .block-container { padding-top: 2rem; max-width: 1440px; }
+    .block-container {{ padding-top: 2rem; max-width: 1440px; }}
     
-    .hero {
+    .hero {{
         position: relative;
         overflow: hidden;
         padding: 38px 42px;
@@ -358,26 +374,26 @@ st.markdown(
         box-shadow: var(--shadow);
         margin-bottom: 20px;
         color: #f8fafc;
-    }
-    .hero-content { position: relative; z-index: 2; max-width: 920px; }
-    .eyebrow { color: #60a5fa; font-size: 13px; letter-spacing: .16em; text-transform: uppercase; font-weight: 800; }
-    .title { font-size: clamp(32px, 4.5vw, 64px); font-weight: 900; letter-spacing: -.05em; line-height: 1; margin: 5px 0 15px 0; color: #ffffff; }
-    .subtitle { color: #cbd5e1; font-size: 18px; max-width: 900px; line-height: 1.58; }
+    }}
+    .hero-content {{ position: relative; z-index: 2; max-width: 920px; }}
+    .eyebrow {{ color: #60a5fa; font-size: 13px; letter-spacing: .16em; text-transform: uppercase; font-weight: 800; }}
+    .title {{ font-size: clamp(32px, 4.5vw, 64px); font-weight: 900; letter-spacing: -.05em; line-height: 1; margin: 5px 0 15px 0; color: #ffffff; }}
+    .subtitle {{ color: #cbd5e1; font-size: 18px; max-width: 900px; line-height: 1.58; }}
     
-    /* AV Logo Styling */
-    .av-logo-container { display: flex; align-items: center; gap: 20px; }
-    .av-logo {
+    /* AV Logo Styling (Dynamic based on Mars/Luna) */
+    .av-logo-container {{ display: flex; align-items: center; gap: 20px; }}
+    .av-logo {{
         font-family: 'Arial Black', sans-serif;
         font-size: 72px;
         letter-spacing: -14px;
         font-style: italic;
         line-height: 1;
         user-select: none;
-    }
-    .av-logo .a { color: #ef4444; text-shadow: 3px 3px 0px #7f1d1d; }
-    .av-logo .v { color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }
+    }}
+    .av-logo .a {{ color: {av_a_color}; text-shadow: 3px 3px 0px {av_a_shadow}; }}
+    .av-logo .v {{ color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }}
 
-    .glass {
+    .glass {{
         padding: 22px 24px;
         border-radius: 20px;
         background: var(--panel);
@@ -385,8 +401,21 @@ st.markdown(
         box-shadow: var(--shadow);
         margin-bottom: 18px;
         color: var(--ink);
-    }
-    .division-pill {
+    }}
+    
+    /* Segmented Control Styling */
+    div.row-widget.stRadio > div {{
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 20px;
+        background: rgba(255,255,255,0.05);
+        padding: 10px 20px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+    }}
+
+    .division-pill {{
         display: inline-flex;
         align-items: center;
         gap: 8px;
@@ -398,81 +427,62 @@ st.markdown(
         color: #f8fafc;
         font-size: 13px;
         font-weight: 750;
-    }
-    .dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
-    .metric-note { color: #94a3b8; font-size: 13px; margin-top: 10px;}
+    }}
+    .dot {{ width: 10px; height: 10px; border-radius: 999px; display: inline-block; }}
+    .metric-note {{ color: #94a3b8; font-size: 13px; margin-top: 10px;}}
     
-    /* Text overrides for dark mode */
-    h1, h2, h3, p, label, span, div { text-shadow: none; color: var(--ink); }
-    div[data-testid="stMarkdownContainer"] p, div[data-testid="stMarkdownContainer"] li { color: #cbd5e1; }
-    div[data-testid="stMarkdownContainer"] h1, div[data-testid="stMarkdownContainer"] h2, div[data-testid="stMarkdownContainer"] h3 { color: #f8fafc; }
-    .hero div[data-testid="stMarkdownContainer"] p, .hero p { color: #e2e8f0 !important; }
-    
-    /* Radio Button Segmented Control Styling */
-    div.row-widget.stRadio > div {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 20px;
-    }
+    h1, h2, h3, p, label, span, div {{ text-shadow: none; color: var(--ink); }}
     
     /* Tabs Styling */
-    button[data-baseweb="tab"] {
+    button[data-baseweb="tab"] {{
         color: #94a3b8 !important;
         font-weight: 700 !important;
         font-size: 16px !important;
         padding: 10px 20px !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
+    }}
+    button[data-baseweb="tab"][aria-selected="true"] {{
         color: #f8fafc !important;
-    }
-    div[data-baseweb="tab-highlight"] {
-        background-color: #ef4444 !important; /* Red underline */
+    }}
+    div[data-baseweb="tab-highlight"] {{
+        background-color: #ef4444 !important;
         height: 3px !important;
-    }
+    }}
 
     /* Solid Color Buttons */
-    .stButton > button, [data-testid="stFormSubmitButton"] > button {
-        background: #2563eb !important; /* Solid Blue */
+    .stButton > button, [data-testid="stFormSubmitButton"] > button {{
+        background: #2563eb !important; 
         color: #ffffff !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 12px !important;
         font-weight: 800 !important;
-        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25) !important;
-    }
-    .stButton > button:hover, [data-testid="stFormSubmitButton"] > button:hover { 
-        background: #1d4ed8 !important; transform: translateY(-1px); 
-    }
+    }}
     
-    .stDownloadButton > button {
-        background: #ef4444 !important; /* Solid Red */
-        color: #ffffff !important;
-        border: 1px solid rgba(255,255,255,0.1) !important;
-        border-radius: 12px !important;
-        font-weight: 800 !important;
+    /* Primary buttons (Solid Red) */
+    button[kind="primary"] {{
+        background: #ef4444 !important;
         box-shadow: 0 8px 20px rgba(239, 68, 68, 0.25) !important;
-    }
-    .stDownloadButton > button:hover { background: #dc2626 !important; transform: translateY(-1px); }
+    }}
+    button[kind="primary"]:hover {{ background: #dc2626 !important; transform: translateY(-1px); }}
     
     /* Fix inputs */
-    input, textarea, [data-baseweb="select"] { color: #f8fafc !important; }
-    [data-baseweb="base-input"], [data-baseweb="select"] > div {
+    input, textarea, [data-baseweb="select"] {{ color: #f8fafc !important; }}
+    [data-baseweb="base-input"], [data-baseweb="select"] > div {{
         background: #0f172a !important;
         border-color: #334155 !important;
-    }
+    }}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 st.markdown(
-    """
+    f"""
 <div class="hero">
   <div class="hero-content">
     <div class="av-logo-container">
         <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
         <div>
-            <div class="eyebrow">Project AV • PM input station</div>
+            <div class="eyebrow">Project AV • {competition} Mission Mode</div>
             <div class="title">Weekly Performance Report</div>
         </div>
     </div>
@@ -486,38 +496,39 @@ st.markdown(
 )
 
 # -----------------------------------------------------------------------------
-# COMPETITION SELECTOR
+# SIDEBAR CONFIGURATION
 # -----------------------------------------------------------------------------
-st.markdown('<div class="glass" style="margin-bottom: 18px; padding: 16px 24px;">', unsafe_allow_html=True)
-st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 16px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
-competition_display = st.radio(
-    "Competition Program",
-    options=["Mars Mission", "Luna Mission"],
-    horizontal=True,
-    label_visibility="collapsed",
-    help="Select which competition program this weekly report belongs to."
-)
-st.markdown('</div>', unsafe_allow_html=True)
-
-competition = "Mars" if competition_display == "Mars Mission" else "Luna"
-
 with st.sidebar:
     st.header("Report setup")
     pm_name = st.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
     division = st.selectbox("Division", DIVISIONS, index=0)
 
-    center_monday = today_monday()
-    week_options = build_week_options(center_monday, weeks_back=12, weeks_forward=8)
-    default_week_index = week_options.index(center_monday) if center_monday in week_options else 12
-    week_start = st.selectbox(
-        "Report week",
-        options=week_options,
-        index=default_week_index,
-        format_func=week_range_label,
-        help="Pick the Monday-Friday work week being reported. Monday meetings usually review the previous week and plan the current week.",
-    )
+    st.divider()
+    st.subheader("Week Selection")
+    st.caption("Pick the Monday-Friday work week being reported.")
+    
+    # Calendar Controls
+    if "selected_date" not in st.session_state:
+        st.session_state.selected_date = today_monday()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("◀ Prev"):
+            st.session_state.selected_date -= timedelta(weeks=1)
+    with c2:
+        if st.button("■ This", type="primary", use_container_width=True):
+            st.session_state.selected_date = today_monday()
+    with c3:
+        if st.button("Next ▶"):
+            st.session_state.selected_date += timedelta(weeks=1)
+            
+    cal_date = st.date_input("Calendar Date", value=st.session_state.selected_date)
+    st.session_state.selected_date = cal_date
+    week_start = monday_for(cal_date)
     week_end = week_start + timedelta(days=4)
-    st.caption(f"Selected work week: **{week_range_label(week_start)}**")
+    
+    st.info(f"Selected work week: **{week_range_label(week_start)}**")
+
     st.divider()
     st.caption("Score weights")
     for name, weight in METRIC_WEIGHTS.items():
@@ -608,7 +619,6 @@ col_config_locked["member_name"] = st.column_config.TextColumn("Member Name", di
 # -----------------------------------------------------------------------------
 st.markdown('<div class="glass">', unsafe_allow_html=True)
 
-# Side-by-side title and pop-over Help Icon
 c_title, c_help = st.columns([10, 1])
 with c_title:
     st.subheader("Member weekly rows")
@@ -677,10 +687,7 @@ with st.form("weekly_data_form"):
 
 # Process the save event AFTER the form is submitted
 if submit_edits:
-    # df1 is the absolute truth for member_names. 
     st.session_state.tracker_df.update(df1)
-    
-    # Drop member_name from df2 and df3 so they don't overwrite the names with blanks
     st.session_state.tracker_df.update(df2.drop(columns=["member_name"]))
     st.session_state.tracker_df.update(df3.drop(columns=["member_name"]))
     
@@ -694,7 +701,6 @@ if submit_edits:
                 else:
                     st.session_state.show_warning = message
             except Exception as exc:
-                # Local fallback so they do not lose work if Google Sheets briefly fails.
                 try:
                     draft_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(draft_path, "w", encoding="utf-8") as f:
@@ -707,7 +713,6 @@ if submit_edits:
     else:
         st.session_state.show_warning = True
         
-    # Force a refresh so Tab 2 and Tab 3 instantly show the new names you just typed
     st.rerun()
 
 # Display the save messages outside the rerun cycle
@@ -721,7 +726,6 @@ if st.session_state.get("show_save_error"):
     st.error(f"Draft save failed: {st.session_state.pop('show_save_error')}")
 
 st.markdown('</div>', unsafe_allow_html=True)
-
 
 # --- REPORT GENERATION ---
 rows = st.session_state.tracker_df.fillna("").to_dict(orient="records")
@@ -777,7 +781,7 @@ replace_existing = st.checkbox(
 
 col_a, col_b = st.columns([1, 2])
 with col_a:
-    save_clicked = st.button("► Final Submit to Google Sheets", type="primary", use_container_width=True)
+    save_clicked = st.button(f"► Final Submit to Google Sheets", type="primary", use_container_width=True)
 with col_b:
     st.code(st.secrets.get("SHEET_NAME", "AV PM Reports Database"), language="text")
 
