@@ -17,6 +17,7 @@ from av_common import (
     APP_NAME,
     DIVISION_COLORS,
     DIVISIONS,
+    REQUIRED_COLUMNS,
     annotate_attendance_streaks,
     flags_to_text,
     metric_weights_text,
@@ -37,7 +38,7 @@ SCOPES = [
 
 SHEET_COLUMNS = [
     "timestamp",
-    "competition", # ADDED FOR MARS/LUNA
+    "competition", 
     "week_start",
     "division",
     "pm_name",
@@ -95,12 +96,13 @@ def get_spreadsheet():
     return client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
 
 @st.cache_data(ttl=600, show_spinner=False)
-def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token=0) -> pd.DataFrame:
+def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token=0) -> tuple[pd.DataFrame, list]:
+    warnings_list = []
     try:
         worksheet = _client.worksheet(worksheet_name)
         records = worksheet.get_all_records()
         if not records:
-            return pd.DataFrame(columns=SHEET_COLUMNS)
+            return pd.DataFrame(columns=SHEET_COLUMNS), warnings_list
         
         df = pd.DataFrame(records)
         
@@ -121,13 +123,34 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                
-        return df
+
+        # Always create week_start_dt
+        if "week_start" in df.columns:
+            df["week_start_dt"] = pd.to_datetime(df["week_start"], errors="coerce")
+        else:
+            df["week_start_dt"] = pd.NaT
+            
+        # Return logic ensuring ordered format and preservation of required columns
+        ordered = list(REQUIRED_COLUMNS) + ["week_start_dt"]
+
+        # Ensure we also don't drop standard sheet columns (like performance_pct) during the enforcement
+        for extra in list(SHEET_COLUMNS) + ["competition", "communication_score", "hours_invested"]:
+            if extra not in ordered and extra in df.columns:
+                ordered.append(extra)
+
+        for col in ordered:
+            if col not in df.columns:
+                df[col] = ""
+
+        return df[ordered], warnings_list
+        
     except gspread.WorksheetNotFound:
-        return pd.DataFrame(columns=SHEET_COLUMNS)
+        warnings_list.append(f"Worksheet {worksheet_name} not found.")
+        return pd.DataFrame(columns=SHEET_COLUMNS), warnings_list
     except Exception as e:
         st.error(f"Error loading data from Google Sheets: {e}")
-        return pd.DataFrame(columns=SHEET_COLUMNS)
+        warnings_list.append(str(e))
+        return pd.DataFrame(columns=SHEET_COLUMNS), warnings_list
 
 # -----------------------------------------------------------------------------
 # COMPETITION STATE INITIALIZATION
@@ -475,7 +498,19 @@ with st.sidebar:
 # Load base data
 client = get_spreadsheet()
 worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
-raw_df = load_reports_from_google_sheets(client, worksheet_name, force_refresh_token=st.session_state.force_refresh)
+raw_df, warnings = load_reports_from_google_sheets(client, worksheet_name, force_refresh_token=st.session_state.force_refresh)
+
+# --- SAFETY PATCH FOR ATTENDANCE STREAKS ---
+if not raw_df.empty:
+    if "week_start_dt" not in raw_df.columns:
+        raw_df["week_start_dt"] = pd.to_datetime(raw_df.get("week_start", ""), errors="coerce")
+        
+    if "division" not in raw_df.columns:
+        raw_df["division"] = ""
+        
+    if "member_name" not in raw_df.columns:
+        raw_df["member_name"] = ""
+
 df = annotate_attendance_streaks(raw_df)
 
 if df.empty:
@@ -576,7 +611,6 @@ with tab_exec:
             org_means_list.append(org_means_list[0])
             categories_loop = categories + [categories[0]]
             
-            # Use dynamic primary color for radar chart
             radar_fill = primary_shadow if competition == "All" else primary_shadow
             radar_line = primary
             
@@ -593,7 +627,6 @@ with tab_exec:
             st.plotly_chart(fig5, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
-    # If viewing "All Missions", add a comparative summary chart
     if competition == "All":
         st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.subheader("Mission Performance Comparison")
@@ -603,7 +636,6 @@ with tab_exec:
         fig_comp = px.bar(comp_summary, x="week_start", y="performance_pct", color="competition", barmode="group", color_discrete_map=comp_colors)
         fig_comp.update_yaxes(range=[0, 100], title="Avg Performance %")
         fig_comp.update_xaxes(title="Week")
-        # Ensure Luna (white) bars are visible against white text
         fig_comp.update_traces(marker_line_color='rgba(255,255,255,0.2)', marker_line_width=1.5)
         st.plotly_chart(plotly_theme(fig_comp), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
