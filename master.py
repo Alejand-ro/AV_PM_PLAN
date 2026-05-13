@@ -25,7 +25,7 @@ from av_common import (
     week_label,
 )
 
-st.set_page_config(page_title="AV Admin Command", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="AV Admin Command", page_icon="⌖", layout="wide")
 
 COLOR_MAP = DIVISION_COLORS
 STATUS_COLORS = {"Healthy": "#22c55e", "Watch": "#eab308", "Critical": "#ef4444"}
@@ -83,7 +83,6 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
         
         df = pd.DataFrame(records)
         
-        # Backward compatibility for old rows without a competition
         if "competition" not in df.columns:
             df["competition"] = "Mars"
         else:
@@ -124,6 +123,10 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
         return pd.DataFrame(columns=SHEET_COLUMNS), warnings_list
 
 # --- SCHEDULE & GANTT HELPER FUNCTIONS ---
+def get_schedule_tab_name(mission: str, cycle: str, kind: str) -> str:
+    m = "Mars" if mission == "Mars" else "luna"
+    return f"{kind}_schedule_{m}_{cycle}"
+
 def get_worksheet_by_name(_client, worksheet_name: str, headers: list[str]):
     try:
         worksheet = _client.worksheet(worksheet_name)
@@ -151,11 +154,24 @@ def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str
                 df[h] = ""
         return df
     except Exception as e:
-        st.warning(f"Could not load schedule sheet {worksheet_name}: {e}")
         return pd.DataFrame(columns=required_headers)
 
-def load_planned_schedule(mission: str, client, refresh_token) -> pd.DataFrame:
-    sheet_name = f"planned_schedule_{mission}_2026-2027"
+def save_schedule_sheet(_client, worksheet_name: str, df: pd.DataFrame, headers: list[str]):
+    ws = get_worksheet_by_name(_client, worksheet_name, headers)
+    save_df = df.copy()
+    
+    for col in save_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(save_df[col]):
+            save_df[col] = save_df[col].dt.strftime('%Y-%m-%d')
+            
+    save_df = save_df.astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
+    
+    data = save_df[headers].values.tolist()
+    ws.clear()
+    ws.append_rows([headers] + data, value_input_option="USER_ENTERED")
+
+def load_planned_schedule(mission: str, cycle: str, client, refresh_token) -> pd.DataFrame:
+    sheet_name = get_schedule_tab_name(mission, cycle, "planned")
     df = load_schedule_sheet(client, sheet_name, PLANNED_HEADERS, refresh_token)
     if not df.empty:
         df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
@@ -163,14 +179,34 @@ def load_planned_schedule(mission: str, client, refresh_token) -> pd.DataFrame:
         df = df.dropna(subset=["task", "start_date"]).sort_values("start_date")
     return df
 
-def load_actual_schedule(mission: str, client, refresh_token) -> pd.DataFrame:
-    sheet_name = f"actual_schedule_{mission}_2026-2027"
+def load_actual_schedule(mission: str, cycle: str, client, refresh_token) -> pd.DataFrame:
+    sheet_name = get_schedule_tab_name(mission, cycle, "actual")
     df = load_schedule_sheet(client, sheet_name, ACTUAL_HEADERS, refresh_token)
     if not df.empty:
         df["actual_start_date"] = pd.to_datetime(df["actual_start_date"], errors="coerce")
         df["actual_end_date"] = pd.to_datetime(df["actual_end_date"], errors="coerce")
         df["percent_complete"] = pd.to_numeric(df["percent_complete"], errors="coerce").fillna(0)
     return df
+
+def sync_actual_with_planned(planned_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
+    if planned_df.empty:
+        return actual_df
+    p_tasks = planned_df[["task"]].drop_duplicates()
+    if actual_df.empty:
+        df = p_tasks.copy()
+        for c in ACTUAL_HEADERS:
+            if c != "task":
+                df[c] = ""
+        return df
+    
+    df = pd.merge(p_tasks, actual_df, on="task", how="left")
+    
+    for col in ACTUAL_HEADERS:
+        if col not in df.columns:
+            df[col] = ""
+            
+    df = df.fillna("")
+    return df[ACTUAL_HEADERS]
 
 def build_plan_vs_actual_dataframe(planned_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
     if planned_df.empty:
@@ -188,8 +224,19 @@ def build_plan_vs_actual_dataframe(planned_df: pd.DataFrame, actual_df: pd.DataF
         
     df = pd.merge(planned_df, actual_df, on="task", how="left")
     
-    df["actual_start_variance_days"] = (df["actual_start_date"] - df["start_date"]).dt.days
-    df["actual_end_variance_days"] = (df["actual_end_date"] - df["end_date"]).dt.days
+    for col in ACTUAL_HEADERS:
+        if col not in df.columns:
+            df[col] = pd.NaT if "date" in col else ""
+            
+    if pd.api.types.is_datetime64_any_dtype(df.get("actual_start_date")) and pd.api.types.is_datetime64_any_dtype(df.get("start_date")):
+        df["actual_start_variance_days"] = (df["actual_start_date"] - df["start_date"]).dt.days
+    else:
+        df["actual_start_variance_days"] = np.nan
+        
+    if pd.api.types.is_datetime64_any_dtype(df.get("actual_end_date")) and pd.api.types.is_datetime64_any_dtype(df.get("end_date")):
+        df["actual_end_variance_days"] = (df["actual_end_date"] - df["end_date"]).dt.days
+    else:
+        df["actual_end_variance_days"] = np.nan
     
     def calculate_status(row):
         if pd.isna(row.get("actual_start_date")):
@@ -241,7 +288,6 @@ if competition == "Mars":
     logo_a_shadow = "#7f1d1d"
     logo_v_color = "#ffffff"
     logo_v_shadow = "#94a3b8"
-    
     mode_text = "Mars Mission Command"
     
 elif competition == "Luna":
@@ -260,7 +306,6 @@ elif competition == "Luna":
     logo_a_shadow = "#64748b"
     logo_v_color = "#3b82f6"
     logo_v_shadow = "#1e3a8a"
-    
     mode_text = "Luna Mission Command"
 else:
     bg_top = "#1e293b"
@@ -278,7 +323,6 @@ else:
     logo_a_shadow = "#7f1d1d"
     logo_v_color = "#3b82f6"
     logo_v_shadow = "#1e3a8a"
-    
     mode_text = "All Missions Command"
 
 st.markdown(
@@ -508,343 +552,37 @@ def metric_delta_text(current: float | None, previous: float | None) -> str:
     return f"{sign}{delta:.1f} pts vs previous week"
 
 # -----------------------------------------------------------------------------
-# Admin Header
+# SIDEBAR / NAVIGATION
 # -----------------------------------------------------------------------------
-st.markdown(
-    f"""
-<div class="hero">
-  <div class="hero-content">
-    <div class="av-logo-container">
-        <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
-        <div class="eyebrow" style="margin-top: 15px;">Executive Level Operations</div>
-    </div>
-    <div class="title">Performance <span class="admin-title">{mode_text}</span></div>
-    <div class="subtitle">
-      Comprehensive analytical breakdown of division trends, execution bottlenecks, communication gaps, and workforce health. 
-    </div>
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+st.sidebar.header("⌖ Navigation")
+current_page = st.sidebar.radio("Go to", ["▦ Dashboard Overview", "◷ Mission Schedule", "⌖ Gantt Management"])
 
-# -----------------------------------------------------------------------------
-# GLOBAL MISSION TOGGLE
-# -----------------------------------------------------------------------------
-st.markdown('<div style="display: flex; justify-content: center; margin-bottom: 32px;">', unsafe_allow_html=True)
-comp_choice = st.radio(
-    "Mission Toggle",
-    options=["All Missions", "Mars Mission", "Luna Mission"],
-    index=0 if competition == "All" else (1 if competition == "Mars" else 2),
-    horizontal=True,
-    label_visibility="collapsed",
-    key="comp_radio_selector"
-)
-st.markdown('</div>', unsafe_allow_html=True)
-
-# Update state if changed
-new_comp = "All" if comp_choice == "All Missions" else ("Mars" if comp_choice == "Mars Mission" else "Luna")
-if new_comp != st.session_state.competition:
-    st.session_state.competition = new_comp
-    st.rerun()
-
-# -----------------------------------------------------------------------------
-# DATA LOADING & SIDEBAR
-# -----------------------------------------------------------------------------
 sheet_ok, sheet_msg = google_sheet_ready()
 
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = 0
 
 with st.sidebar:
-    st.header("⚙️ Data Sync")
+    st.divider()
+    st.header("⌖ Data Sync")
     if st.button("↻ Force Refresh Google Sheets", use_container_width=True):
         st.session_state.force_refresh += 1
         st.cache_data.clear()
+        st.rerun()
     if sheet_ok:
         st.caption(f"Status: {sheet_msg}")
     else:
         st.error(sheet_msg)
         st.stop()
 
-# Load base data
-client = get_spreadsheet()
-worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
-raw_df, warnings = load_reports_from_google_sheets(client, worksheet_name, force_refresh_token=st.session_state.force_refresh)
-
-# --- SAFETY PATCH FOR ATTENDANCE STREAKS ---
-if not raw_df.empty:
-    if "week_start_dt" not in raw_df.columns:
-        raw_df["week_start_dt"] = pd.to_datetime(raw_df.get("week_start", ""), errors="coerce")
-    if "division" not in raw_df.columns:
-        raw_df["division"] = ""
-    if "member_name" not in raw_df.columns:
-        raw_df["member_name"] = ""
-
-df = annotate_attendance_streaks(raw_df)
-
-# Apply Competition Filter globally
-if competition != "All":
-    df = df[df["competition"] == competition]
-
-if competition == "Luna":
-    luna_allowed = ["electrical", "vehicle", "software"]
-    available_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in luna_allowed)]
-    if not available_divisions:
-        available_divisions = ["Power and Electrical Systems", "Vehicle Design & Structures", "Software & Hardware"]
-elif competition == "Mars" or competition == "All":
-    available_divisions = DIVISIONS
-
-available_weeks = sorted([w for w in df["week_start"].dropna().unique().tolist() if w])
-
-with st.sidebar:
-    st.divider()
-    st.header("⌖ Division Toggle")
-    st.caption("Isolate specific teams in the analytics")
-    selected_divs = st.multiselect("Active Divisions", options=available_divisions, default=available_divisions)
-
 # -----------------------------------------------------------------------------
-# Global Timeline Filters & KPIs
+# PAGE: GANTT MANAGEMENT
 # -----------------------------------------------------------------------------
-st.markdown('<div class="panel" style="padding: 15px 36px; margin-bottom: 24px;">', unsafe_allow_html=True)
-selected_weeks = st.multiselect("Timeline Filter (Affects entire dashboard)", options=available_weeks, default=available_weeks[-6:] if len(available_weeks) > 6 else available_weeks, format_func=week_label)
-st.markdown('</div>', unsafe_allow_html=True)
-
-filtered = df[
-    (df["week_start"].isin(selected_weeks) if selected_weeks else True) &
-    (df["division"].isin(selected_divs) if selected_divs else True)
-].copy()
-
-current_week_str = max(filtered["week_start"].dropna()) if not filtered.empty else None
-current_df = filtered[filtered["week_start"] == current_week_str] if current_week_str else filtered
-previous_weeks = sorted([w for w in filtered["week_start"].unique().tolist() if current_week_str and w < current_week_str])
-prev_df = filtered[filtered["week_start"] == previous_weeks[-1]] if previous_weeks else pd.DataFrame(columns=filtered.columns)
-
-org_avg = float(current_df["performance_pct"].mean()) if not current_df.empty else None
-prev_avg = float(prev_df["performance_pct"].mean()) if not prev_df.empty else None
-risk_count = int(current_df["status"].isin(["Critical", "Watch"]).sum()) if not current_df.empty else 0
-blockers = int(current_df["blocked_tasks"].sum()) if not current_df.empty else 0
-attendance_flags = int((current_df["attendance_risk_streak"] >= 2).sum()) if not current_df.empty else 0
-
-k1, k2, k3, k4 = st.columns(4)
-with k1: st.markdown(kpi_card("Current Filter Average", f"{org_avg:.1f}%" if org_avg is not None else "—", metric_delta_text(org_avg, prev_avg), primary), unsafe_allow_html=True)
-with k2: st.markdown(kpi_card("At-Risk Members", str(risk_count), "Watch + Critical statuses", "#ef4444"), unsafe_allow_html=True)
-with k3: st.markdown(kpi_card("Active Blockers", str(blockers), "Total tasks currently blocked", "#ffffff"), unsafe_allow_html=True)
-with k4: st.markdown(kpi_card("Attendance Risks", str(attendance_flags), "Consecutive absence streaks", "#3b82f6"), unsafe_allow_html=True)
-
-st.markdown('<br>', unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# TABBED DASHBOARD LAYOUT 
-# -----------------------------------------------------------------------------
-if competition == "All":
-    tab_exec, tab_schedule, tab_action = st.tabs([
-        "❖ Executive Overview", 
-        "📅 Mission Schedule",
-        "⚠️ Action Center"
-    ])
-    tab_div = None
-    tab_ops = None
-else:
-    tab_exec, tab_div, tab_ops, tab_schedule, tab_action = st.tabs([
-        "❖ Executive Overview", 
-        "🔬 Division Intelligence", 
-        "⛒ Bottlenecks & Health", 
-        "📅 Mission Schedule",
-        "⚠️ Action Center"
-    ])
-
-# ==========================================
-# TAB 1: EXECUTIVE OVERVIEW
-# ==========================================
-with tab_exec:
-    st.markdown('<br>', unsafe_allow_html=True)
-    if filtered.empty:
-        st.info(f"No performance data currently logged for {competition} Mission under these filters.")
-    else:
-        r1c1, r1c2 = st.columns([1.5, 1])
-        
-        with r1c1:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.subheader("Historical Trajectory by Division")
-            st.markdown('<div class="chart-desc">Tracks overall performance percentage of filtered divisions over time.</div>', unsafe_allow_html=True)
-            weekly_div = filtered.groupby(["week_start", "division"], as_index=False)["performance_pct"].mean()
-            fig1 = px.line(weekly_div, x="week_start", y="performance_pct", color="division", markers=True, color_discrete_map=COLOR_MAP)
-            fig1.update_traces(line=dict(width=3), marker=dict(size=8))
-            fig1.update_yaxes(range=[0, 100], title="Performance %")
-            fig1.update_xaxes(title="Week")
-            st.plotly_chart(plotly_theme(fig1), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-        with r1c2:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.subheader("Operational Balance")
-            st.markdown('<div class="chart-desc">Holistic view of current operational capability for selected filters.</div>', unsafe_allow_html=True)
-            if not current_df.empty:
-                categories = ['Completion', 'Quality', 'Delivery', 'Attendance', 'Confidence']
-                org_means = current_df[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
-                org_means_list = org_means.tolist()
-                org_means_list.append(org_means_list[0])
-                categories_loop = categories + [categories[0]]
-                
-                radar_fill = primary_shadow if competition == "All" else primary_shadow
-                radar_line = primary
-                
-                fig5 = go.Figure()
-                fig5.add_trace(go.Scatterpolar(
-                    r=org_means_list, theta=categories_loop, fill='toself',
-                    fillcolor=radar_fill, line=dict(color=radar_line, width=2), name='Filter Average'
-                ))
-                fig5.update_layout(
-                    polar=dict(radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(255,255,255,0.1)")),
-                    showlegend=False, template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(t=20, b=20, l=20, r=20)
-                )
-                st.plotly_chart(fig5, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-        if competition == "All":
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.subheader("Mission Performance Comparison")
-            st.markdown('<div class="chart-desc">Direct comparison of operational health across active competition programs.</div>', unsafe_allow_html=True)
-            comp_summary = filtered.groupby(["week_start", "competition"], as_index=False)["performance_pct"].mean()
-            comp_colors = {"Mars": "#ef4444", "Luna": "#f8fafc"}
-            fig_comp = px.bar(comp_summary, x="week_start", y="performance_pct", color="competition", barmode="group", color_discrete_map=comp_colors)
-            fig_comp.update_yaxes(range=[0, 100], title="Avg Performance %")
-            fig_comp.update_xaxes(title="Week")
-            fig_comp.update_traces(marker_line_color='rgba(255,255,255,0.2)', marker_line_width=1.5)
-            st.plotly_chart(plotly_theme(fig_comp), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# ==========================================
-# TAB 2: DIVISION INTELLIGENCE (Only for Mars/Luna)
-# ==========================================
-if tab_div is not None:
-    with tab_div:
-        st.markdown('<br>', unsafe_allow_html=True)
-        if current_df.empty:
-            st.info(f"No performance data currently logged for {competition} Mission under these filters.")
-        else:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.subheader("Performance Variance (Consistency)")
-            st.markdown('<div class="chart-desc">A tall box means highly inconsistent team performance. A short box means uniform performance. Outlier dots represent specific over/under-performers.</div>', unsafe_allow_html=True)
-            fig3 = px.box(current_df, x="division", y="performance_pct", color="division", color_discrete_map=COLOR_MAP, points="all")
-            fig3.update_yaxes(range=[0, 105], title="Individual Performance %")
-            fig3.update_xaxes(title="")
-            fig3.update_layout(showlegend=False, height=350)
-            st.plotly_chart(plotly_theme(fig3), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-    
-            st.markdown("### Metric Weakness by Division")
-            st.markdown('<div class="chart-desc" style="margin-left: 0;">Heatmaps explicitly styled to match each division\'s brand color. Darker/brighter blocks show which specific metric is currently excelling or dragging the team down.</div>', unsafe_allow_html=True)
-            
-            cols = st.columns(len(selected_divs))
-            
-            if not current_df.empty:
-                heat_df = current_df.groupby("division")[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
-            else:
-                heat_df = pd.DataFrame()
-                
-            for idx, div_name in enumerate(selected_divs):
-                with cols[idx]:
-                    st.markdown(f'<div class="panel" style="padding: 20px; text-align: center;">', unsafe_allow_html=True)
-                    st.markdown(f"<h4 style='color: {COLOR_MAP.get(div_name, '#ffffff')}; margin-bottom: 10px;'>{div_name}</h4>", unsafe_allow_html=True)
-                    
-                    if div_name in heat_df.index and not heat_df.loc[[div_name]].isna().all().all():
-                        div_data = heat_df.loc[[div_name]].T
-                        div_data.columns = ["Score"]
-                        
-                        div_color = COLOR_MAP.get(div_name, "#ffffff")
-                        custom_scale = [[0.0, "rgba(0,0,0,0)"], [1.0, div_color]]
-                        
-                        fig_heat = px.imshow(
-                            div_data, 
-                            text_auto=".1f", 
-                            aspect="auto", 
-                            color_continuous_scale=custom_scale, 
-                            zmin=0, zmax=100
-                        )
-                        fig_heat.update_layout(
-                            coloraxis_showscale=False, 
-                            margin=dict(t=10, b=10, l=10, r=10),
-                            height=300,
-                            plot_bgcolor="rgba(0,0,0,0)",
-                            paper_bgcolor="rgba(0,0,0,0)"
-                        )
-                        fig_heat.update_xaxes(visible=False)
-                        st.plotly_chart(plotly_theme(fig_heat), use_container_width=True)
-                    else:
-                        st.markdown("<div style='height: 300px; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.2); font-size: 14px; font-weight: bold; border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;'>NO DATA SUBMITTED YET</div>", unsafe_allow_html=True)
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-# ==========================================
-# TAB 3: BOTTLENECKS & HEALTH (Only for Mars/Luna)
-# ==========================================
-if tab_ops is not None:
-    with tab_ops:
-        st.markdown('<br>', unsafe_allow_html=True)
-        if current_df.empty:
-            st.info(f"No performance data currently logged for {competition} Mission under these filters.")
-        else:
-            r3c1, r3c2 = st.columns([1, 1.2])
-            
-            with r3c1:
-                st.markdown('<div class="panel">', unsafe_allow_html=True)
-                st.subheader("Blockers vs. Performance Impact")
-                st.markdown('<div class="chart-desc">Analyzes if external blockers are the root cause of poor performance. Size of the dot equals communication score.</div>', unsafe_allow_html=True)
-                
-                scatter_df = current_df.copy()
-                scatter_df["blocked_jitter"] = scatter_df["blocked_tasks"] + np.random.uniform(-0.15, 0.15, size=len(scatter_df))
-                
-                fig4 = px.scatter(
-                    scatter_df, x="blocked_jitter", y="performance_pct", color="division", 
-                    size="communication_score", hover_data=["member_name", "blocked_tasks", "communication_score"],
-                    color_discrete_map=COLOR_MAP
-                )
-                fig4.update_yaxes(range=[0, 105], title="Performance %")
-                fig4.update_xaxes(title="Count of Blocked Tasks (Slight jitter for visibility)", tickvals=[0,1,2,3,4,5])
-                fig4.update_layout(height=450)
-                st.plotly_chart(plotly_theme(fig4), use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-            with r3c2:
-                st.markdown('<div class="panel">', unsafe_allow_html=True)
-                st.subheader("Workforce Status Topology")
-                st.markdown('<div class="chart-desc">Hierarchical view: Divisions → Roles → Statuses. Click into a block to zoom. Colors represent status severity.</div>', unsafe_allow_html=True)
-                
-                if not current_df.empty:
-                    tree_df = current_df.copy()
-                    status_map = {"Healthy": 1, "Watch": 2, "Critical": 3}
-                    tree_df["status_num"] = tree_df["status"].map(status_map)
-                    tree_df["count"] = 1
-                    
-                    fig6 = px.treemap(
-                        tree_df, path=[px.Constant("Organization"), "division", "role", "status"], 
-                        values="count", color="status_num", color_continuous_scale=["#22c55e", "#eab308", "#ef4444"],
-                        hover_data=["member_name"]
-                    )
-                    fig6.update_layout(coloraxis_showscale=False, margin=dict(t=10, l=10, r=10, b=10), height=450)
-                    st.plotly_chart(plotly_theme(fig6), use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-# ==========================================
-# TAB: MISSION SCHEDULE GANTT TRACKER
-# ==========================================
-def render_mission_schedule(render_mission: str, db_client, r_token):
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown(f"<h2>🚀 {render_mission} Mission Schedule Tracker</h2>", unsafe_allow_html=True)
-    st.markdown('<div class="chart-desc">Dynamic Gantt tracking comparing planned execution vs actual recorded progress. Missing tables are safely generated on load.</div>', unsafe_allow_html=True)
-
-    plan_df = load_planned_schedule(render_mission, db_client, r_token)
-    act_df = load_actual_schedule(render_mission, db_client, r_token)
-
+def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_mission: str):
     if plan_df.empty:
-        st.info(f"No planned schedule data found for {render_mission} Mission yet. Add tasks to `planned_schedule_{render_mission}_2026-2027` in Google Sheets.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.info(f"ⓘ No planned schedule data found for {render_mission} Mission yet.")
         return
 
-    # 1. Plot Planned Gantt (Pure Baseline)
     st.subheader("Baseline Planned Timeline")
     fig_plan = px.timeline(plan_df, x_start="start_date", x_end="end_date", y="task", color="phase", hover_data=["task", "phase", "duration"])
     fig_plan.update_yaxes(autorange="reversed", title="")
@@ -852,15 +590,12 @@ def render_mission_schedule(render_mission: str, db_client, r_token):
     fig_plan.update_layout(height=max(300, len(plan_df) * 30))
     st.plotly_chart(plotly_theme(fig_plan), use_container_width=True)
 
-    if act_df.empty:
-        st.warning(f"Actual progress tracking is ready. Fill the `actual_schedule_{render_mission}_2026-2027` tab to compare planned vs real execution.")
-    else:
+    if not act_df.empty:
         st.divider()
         st.subheader("Plan vs. Actual Execution")
         
         merged_df = build_plan_vs_actual_dataframe(plan_df, act_df)
         
-        # Calculate Quick KPIs
         if "percent_complete" in merged_df.columns:
             avg_pct = merged_df["percent_complete"].mean()
         else:
@@ -880,7 +615,6 @@ def render_mission_schedule(render_mission: str, db_client, r_token):
         m5.metric("Tasks Missing Data", not_updated)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Build Comparative Overlay Gantt
         plot_items = []
         for _, row in merged_df.iterrows():
             if pd.notna(row.get("start_date")) and pd.notna(row.get("end_date")):
@@ -890,7 +624,6 @@ def render_mission_schedule(render_mission: str, db_client, r_token):
                 
         if plot_items:
             overlay_df = pd.DataFrame(plot_items)
-            # Use dynamic primary color for the actuals so it matches the mission theme
             color_map = {"Planned Schedule": "rgba(255,255,255,0.25)", "Actual Execution": primary}
             
             fig_overlay = px.timeline(overlay_df, x_start="start", x_end="end", y="task", color="Type", color_discrete_map=color_map)
@@ -905,69 +638,465 @@ def render_mission_schedule(render_mission: str, db_client, r_token):
         valid_cols = [c for c in view_cols if c in merged_df.columns]
         st.dataframe(merged_df[valid_cols], use_container_width=True, hide_index=True)
 
+
+if current_page == "⌖ Gantt Management":
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero-content">
+            <div class="av-logo-container">
+                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                <div>
+                    <div class="eyebrow">Project AV • Timeline Administration</div>
+                    <div class="title">Gantt Management</div>
+                </div>
+            </div>
+            <div class="subtitle" style="margin-top: 10px;">
+              Create and maintain Mission timelines. Actual Outcome tracking uses the Planned Baseline as its memory source.
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    gantt_mission = c1.selectbox("Target Mission", ["Mars", "Luna"])
+    gantt_cycle = c2.selectbox("Yearly Cycle", ["2026-2027", "2027-2028"])
+    gantt_mode = c3.radio("Schedule Mode", ["Planned Baseline", "Actual Outcome"])
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    client = get_spreadsheet()
+    plan_df = load_planned_schedule(gantt_mission, gantt_cycle, client, st.session_state.force_refresh)
+    act_df = load_actual_schedule(gantt_mission, gantt_cycle, client, st.session_state.force_refresh)
+    
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    if gantt_mode == "Planned Baseline":
+        st.subheader("▦ Edit Planned Baseline")
+        st.markdown('<div class="chart-desc">Add or modify baseline tasks. Dates must be formatted as YYYY-MM-DD.</div>', unsafe_allow_html=True)
+        edited_plan = st.data_editor(plan_df if not plan_df.empty else pd.DataFrame(columns=PLANNED_HEADERS), num_rows="dynamic", use_container_width=True, height=500)
+        
+        if st.button("☑ Save Planned Schedule", type="primary"):
+            save_schedule_sheet(client, get_schedule_tab_name(gantt_mission, gantt_cycle, "planned"), edited_plan, PLANNED_HEADERS)
+            st.success(f"ⓘ Successfully saved Planned Baseline for {gantt_mission} ({gantt_cycle}).")
+            st.cache_data.clear()
+            st.rerun()
+            
+        st.divider()
+        render_gantt_charts(edited_plan, act_df, gantt_mission)
+            
+    else:
+        st.subheader("▦ Edit Actual Outcome")
+        if plan_df.empty:
+            st.warning("⚠ Create the planned baseline first. Actual outcome tracking uses the planned task list as its source.")
+        else:
+            st.markdown('<div class="chart-desc">Log actual progress against the baseline. Task names are locked to the planned schedule.</div>', unsafe_allow_html=True)
+            
+            if st.button("↻ Sync Tasks from Planned Baseline"):
+                act_df = sync_actual_with_planned(plan_df, act_df)
+                st.info("ⓘ Synced missing tasks. Review below and save.")
+                
+            edited_act = st.data_editor(act_df if not act_df.empty else sync_actual_with_planned(plan_df, act_df), disabled=["task"], use_container_width=True, height=500)
+            
+            if st.button("☑ Save Actual Outcome", type="primary"):
+                save_schedule_sheet(client, get_schedule_tab_name(gantt_mission, gantt_cycle, "actual"), edited_act, ACTUAL_HEADERS)
+                st.success(f"ⓘ Successfully saved Actual Outcome for {gantt_mission} ({gantt_cycle}).")
+                st.cache_data.clear()
+                st.rerun()
+                
+            st.divider()
+            render_gantt_charts(plan_df, edited_act, gantt_mission)
+            
     st.markdown('</div>', unsafe_allow_html=True)
 
-with tab_schedule:
-    st.markdown('<br>', unsafe_allow_html=True)
-    if competition == "All":
-        render_mission_schedule("Mars", client, st.session_state.force_refresh)
-        render_mission_schedule("Luna", client, st.session_state.force_refresh)
-    else:
-        render_mission_schedule(competition, client, st.session_state.force_refresh)
+# -----------------------------------------------------------------------------
+# PAGE: MISSION SCHEDULE SUMMARY
+# -----------------------------------------------------------------------------
+elif current_page == "◷ Mission Schedule":
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero-content">
+            <div class="av-logo-container">
+                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                <div>
+                    <div class="eyebrow">Project AV • {mode_text}</div>
+                    <div class="title">Mission Schedule</div>
+                </div>
+            </div>
+            <div class="subtitle" style="margin-top: 10px;">
+              Live timeline comparison of planned execution vs actual recorded progress across active yearly cycles.
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    
+    st.markdown('<div style="display: flex; justify-content: center; margin-bottom: 20px;">', unsafe_allow_html=True)
+    comp_choice = st.radio(
+        "Mission Toggle",
+        options=["All Missions", "Mars Mission", "Luna Mission"],
+        index=0 if competition == "All" else (1 if competition == "Mars" else 2),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="comp_radio_selector"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ==========================================
-# TAB 4: ACTION CENTER & MATRIX
-# ==========================================
-with tab_action:
-    st.markdown('<br>', unsafe_allow_html=True)
-    if filtered.empty:
-        st.info(f"No performance data currently logged for {competition} Mission under these filters.")
-    else:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("⚠️ Executive Intervention Required")
-        st.markdown('<div class="chart-desc">Auto-filtered list of personnel who are in Critical/Watch status, have open blockers, or are flagging for consecutive absences.</div>', unsafe_allow_html=True)
-    
-        risk_df = current_df[
-            current_df["status"].isin(["Critical", "Watch"])
-            | (current_df["blocked_tasks"] > 0)
-            | (current_df["attendance_risk_streak"] >= 2)
-        ].copy()
-    
-        if risk_df.empty:
-            st.success("No current personnel risks detected under the selected filters. Operations are nominal.")
-        else:
-            risk_df["flags_text"] = risk_df["flags"].apply(flags_to_text)
-            risk_df = risk_df.sort_values(["status", "performance_pct"], ascending=[False, True])
-            
-            st.dataframe(
-                risk_df[[
-                    "competition", "division", "member_name", "role", "performance_pct", "status", "blocked_tasks",
-                    "attendance_risk_streak", "communication_score", "flags_text", "notes"
-                ]],
-                use_container_width=True, hide_index=True,
-            )
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("▦ Complete Data Matrix")
-        st.markdown('<div class="chart-desc">The unfiltered, raw Google Sheets data flattened into a tabular matrix for external export or auditing.</div>', unsafe_allow_html=True)
-    
-        raw_view = filtered.copy()
-        raw_view["flags"] = raw_view["flags"].apply(flags_to_text)
+    new_comp = "All" if comp_choice == "All Missions" else ("Mars" if comp_choice == "Mars Mission" else "Luna")
+    if new_comp != st.session_state.competition:
+        st.session_state.competition = new_comp
+        st.rerun()
         
-        if competition == "All":
-            raw_view = raw_view.sort_values(["week_start", "competition", "division", "member_name"], ascending=[False, True, True, True])
-        else:
-            raw_view = raw_view.sort_values(["competition", "week_start", "division", "member_name"], ascending=[True, False, True, True])
+    st.markdown('<div class="panel" style="padding: 15px 36px; margin-bottom: 24px;">', unsafe_allow_html=True)
+    cycle_choice = st.selectbox("Active Yearly Cycle", ["2026-2027", "2027-2028"])
+    st.markdown('</div>', unsafe_allow_html=True)
     
-        st.dataframe(raw_view, use_container_width=True, hide_index=True)
+    client = get_spreadsheet()
     
-        st.download_button(
-            "⬇ Export Matrix to CSV",
-            data=raw_view.to_csv(index=False).encode("utf-8"),
-            file_name=f"av_admin_export_{date.today().isoformat()}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            type="primary"
-        )
+    def render_schedule_panel(render_mission: str, cycle: str, db_client, r_token):
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown(f"<h2>◈ {render_mission} Mission Tracker ({cycle})</h2>", unsafe_allow_html=True)
+        plan_df = load_planned_schedule(render_mission, cycle, db_client, r_token)
+        act_df = load_actual_schedule(render_mission, cycle, db_client, r_token)
+        render_gantt_charts(plan_df, act_df, render_mission)
         st.markdown('</div>', unsafe_allow_html=True)
+
+    if competition == "All":
+        render_schedule_panel("Mars", cycle_choice, client, st.session_state.force_refresh)
+        render_schedule_panel("Luna", cycle_choice, client, st.session_state.force_refresh)
+    else:
+        render_schedule_panel(competition, cycle_choice, client, st.session_state.force_refresh)
+
+# -----------------------------------------------------------------------------
+# PAGE: DASHBOARD OVERVIEW
+# -----------------------------------------------------------------------------
+elif current_page == "▦ Dashboard Overview":
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero-content">
+            <div class="av-logo-container">
+                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                <div class="eyebrow" style="margin-top: 15px;">Executive Level Operations</div>
+            </div>
+            <div class="title">Performance <span class="admin-title">{mode_text}</span></div>
+            <div class="subtitle">
+              Comprehensive analytical breakdown of division trends, execution bottlenecks, communication gaps, and workforce health. 
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div style="display: flex; justify-content: center; margin-bottom: 32px;">', unsafe_allow_html=True)
+    comp_choice = st.radio(
+        "Mission Toggle",
+        options=["All Missions", "Mars Mission", "Luna Mission"],
+        index=0 if competition == "All" else (1 if competition == "Mars" else 2),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="comp_radio_selector"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    new_comp = "All" if comp_choice == "All Missions" else ("Mars" if comp_choice == "Mars Mission" else "Luna")
+    if new_comp != st.session_state.competition:
+        st.session_state.competition = new_comp
+        st.rerun()
+
+    client = get_spreadsheet()
+    worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
+    raw_df, warnings = load_reports_from_google_sheets(client, worksheet_name, force_refresh_token=st.session_state.force_refresh)
+
+    if not raw_df.empty:
+        if "week_start_dt" not in raw_df.columns:
+            raw_df["week_start_dt"] = pd.to_datetime(raw_df.get("week_start", ""), errors="coerce")
+        if "division" not in raw_df.columns:
+            raw_df["division"] = ""
+        if "member_name" not in raw_df.columns:
+            raw_df["member_name"] = ""
+
+    df = annotate_attendance_streaks(raw_df)
+
+    if competition != "All":
+        df = df[df["competition"] == competition]
+
+    if competition == "Luna":
+        luna_allowed = ["electrical", "vehicle", "software"]
+        available_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in luna_allowed)]
+        if not available_divisions:
+            available_divisions = ["Power and Electrical Systems", "Vehicle Design & Structures", "Software & Hardware"]
+    elif competition == "Mars" or competition == "All":
+        available_divisions = DIVISIONS
+
+    available_weeks = sorted([w for w in df["week_start"].dropna().unique().tolist() if w])
+
+    with st.sidebar:
+        st.divider()
+        st.header("⌖ Division Toggle")
+        st.caption("Isolate specific teams in the analytics")
+        selected_divs = st.multiselect("Active Divisions", options=available_divisions, default=available_divisions)
+
+    st.markdown('<div class="panel" style="padding: 15px 36px; margin-bottom: 24px;">', unsafe_allow_html=True)
+    selected_weeks = st.multiselect("Timeline Filter (Affects entire dashboard)", options=available_weeks, default=available_weeks[-6:] if len(available_weeks) > 6 else available_weeks, format_func=week_label)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    filtered = df[
+        (df["week_start"].isin(selected_weeks) if selected_weeks else True) &
+        (df["division"].isin(selected_divs) if selected_divs else True)
+    ].copy()
+
+    current_week_str = max(filtered["week_start"].dropna()) if not filtered.empty else None
+    current_df = filtered[filtered["week_start"] == current_week_str] if current_week_str else filtered
+    previous_weeks = sorted([w for w in filtered["week_start"].unique().tolist() if current_week_str and w < current_week_str])
+    prev_df = filtered[filtered["week_start"] == previous_weeks[-1]] if previous_weeks else pd.DataFrame(columns=filtered.columns)
+
+    org_avg = float(current_df["performance_pct"].mean()) if not current_df.empty else None
+    prev_avg = float(prev_df["performance_pct"].mean()) if not prev_df.empty else None
+    risk_count = int(current_df["status"].isin(["Critical", "Watch"]).sum()) if not current_df.empty else 0
+    blockers = int(current_df["blocked_tasks"].sum()) if not current_df.empty else 0
+    attendance_flags = int((current_df["attendance_risk_streak"] >= 2).sum()) if not current_df.empty else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1: st.markdown(kpi_card("Current Filter Average", f"{org_avg:.1f}%" if org_avg is not None else "—", metric_delta_text(org_avg, prev_avg), primary), unsafe_allow_html=True)
+    with k2: st.markdown(kpi_card("At-Risk Members", str(risk_count), "Watch + Critical statuses", "#ef4444"), unsafe_allow_html=True)
+    with k3: st.markdown(kpi_card("Active Blockers", str(blockers), "Total tasks currently blocked", "#ffffff"), unsafe_allow_html=True)
+    with k4: st.markdown(kpi_card("Attendance Risks", str(attendance_flags), "Consecutive absence streaks", "#3b82f6"), unsafe_allow_html=True)
+
+    st.markdown('<br>', unsafe_allow_html=True)
+
+    if competition == "All":
+        tab_exec, tab_action = st.tabs([
+            "◈ Executive Overview", 
+            "⚠ Action Center"
+        ])
+        tab_div = None
+        tab_ops = None
+    else:
+        tab_exec, tab_div, tab_ops, tab_action = st.tabs([
+            "◈ Executive Overview", 
+            "⊙ Division Intelligence", 
+            "⌁ Bottlenecks & Health", 
+            "⚠ Action Center"
+        ])
+
+    with tab_exec:
+        st.markdown('<br>', unsafe_allow_html=True)
+        if filtered.empty:
+            st.info(f"ⓘ No performance data currently logged for {competition} Mission under these filters.")
+        else:
+            r1c1, r1c2 = st.columns([1.5, 1])
+            
+            with r1c1:
+                st.markdown('<div class="panel">', unsafe_allow_html=True)
+                st.subheader("Historical Trajectory by Division")
+                st.markdown('<div class="chart-desc">Tracks overall performance percentage of filtered divisions over time.</div>', unsafe_allow_html=True)
+                weekly_div = filtered.groupby(["week_start", "division"], as_index=False)["performance_pct"].mean()
+                fig1 = px.line(weekly_div, x="week_start", y="performance_pct", color="division", markers=True, color_discrete_map=COLOR_MAP)
+                fig1.update_traces(line=dict(width=3), marker=dict(size=8))
+                fig1.update_yaxes(range=[0, 100], title="Performance %")
+                fig1.update_xaxes(title="Week")
+                st.plotly_chart(plotly_theme(fig1), use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+            with r1c2:
+                st.markdown('<div class="panel">', unsafe_allow_html=True)
+                st.subheader("Operational Balance")
+                st.markdown('<div class="chart-desc">Holistic view of current operational capability for selected filters.</div>', unsafe_allow_html=True)
+                if not current_df.empty:
+                    categories = ['Completion', 'Quality', 'Delivery', 'Attendance', 'Confidence']
+                    org_means = current_df[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
+                    org_means_list = org_means.tolist()
+                    org_means_list.append(org_means_list[0])
+                    categories_loop = categories + [categories[0]]
+                    
+                    radar_fill = primary_shadow if competition == "All" else primary_shadow
+                    radar_line = primary
+                    
+                    fig5 = go.Figure()
+                    fig5.add_trace(go.Scatterpolar(
+                        r=org_means_list, theta=categories_loop, fill='toself',
+                        fillcolor=radar_fill, line=dict(color=radar_line, width=2), name='Filter Average'
+                    ))
+                    fig5.update_layout(
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(255,255,255,0.1)")),
+                        showlegend=False, template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(t=20, b=20, l=20, r=20)
+                    )
+                    st.plotly_chart(fig5, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+            if competition == "All":
+                st.markdown('<div class="panel">', unsafe_allow_html=True)
+                st.subheader("Mission Performance Comparison")
+                st.markdown('<div class="chart-desc">Direct comparison of operational health across active competition programs.</div>', unsafe_allow_html=True)
+                comp_summary = filtered.groupby(["week_start", "competition"], as_index=False)["performance_pct"].mean()
+                comp_colors = {"Mars": "#ef4444", "Luna": "#f8fafc"}
+                fig_comp = px.bar(comp_summary, x="week_start", y="performance_pct", color="competition", barmode="group", color_discrete_map=comp_colors)
+                fig_comp.update_yaxes(range=[0, 100], title="Avg Performance %")
+                fig_comp.update_xaxes(title="Week")
+                fig_comp.update_traces(marker_line_color='rgba(255,255,255,0.2)', marker_line_width=1.5)
+                st.plotly_chart(plotly_theme(fig_comp), use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+    if tab_div is not None:
+        with tab_div:
+            st.markdown('<br>', unsafe_allow_html=True)
+            if current_df.empty:
+                st.info(f"ⓘ No performance data currently logged for {competition} Mission under these filters.")
+            else:
+                st.markdown('<div class="panel">', unsafe_allow_html=True)
+                st.subheader("Performance Variance (Consistency)")
+                st.markdown('<div class="chart-desc">A tall box means highly inconsistent team performance. A short box means uniform performance. Outlier dots represent specific over/under-performers.</div>', unsafe_allow_html=True)
+                fig3 = px.box(current_df, x="division", y="performance_pct", color="division", color_discrete_map=COLOR_MAP, points="all")
+                fig3.update_yaxes(range=[0, 105], title="Individual Performance %")
+                fig3.update_xaxes(title="")
+                fig3.update_layout(showlegend=False, height=350)
+                st.plotly_chart(plotly_theme(fig3), use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+                st.markdown("### Metric Weakness by Division")
+                st.markdown('<div class="chart-desc" style="margin-left: 0;">Heatmaps explicitly styled to match each division\'s brand color. Darker/brighter blocks show which specific metric is currently excelling or dragging the team down.</div>', unsafe_allow_html=True)
+                
+                cols = st.columns(len(selected_divs))
+                
+                if not current_df.empty:
+                    heat_df = current_df.groupby("division")[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
+                else:
+                    heat_df = pd.DataFrame()
+                    
+                for idx, div_name in enumerate(selected_divs):
+                    with cols[idx]:
+                        st.markdown(f'<div class="panel" style="padding: 20px; text-align: center;">', unsafe_allow_html=True)
+                        st.markdown(f"<h4 style='color: {COLOR_MAP.get(div_name, '#ffffff')}; margin-bottom: 10px;'>{div_name}</h4>", unsafe_allow_html=True)
+                        
+                        if div_name in heat_df.index and not heat_df.loc[[div_name]].isna().all().all():
+                            div_data = heat_df.loc[[div_name]].T
+                            div_data.columns = ["Score"]
+                            
+                            div_color = COLOR_MAP.get(div_name, "#ffffff")
+                            custom_scale = [[0.0, "rgba(0,0,0,0)"], [1.0, div_color]]
+                            
+                            fig_heat = px.imshow(
+                                div_data, 
+                                text_auto=".1f", 
+                                aspect="auto", 
+                                color_continuous_scale=custom_scale, 
+                                zmin=0, zmax=100
+                            )
+                            fig_heat.update_layout(
+                                coloraxis_showscale=False, 
+                                margin=dict(t=10, b=10, l=10, r=10),
+                                height=300,
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)"
+                            )
+                            fig_heat.update_xaxes(visible=False)
+                            st.plotly_chart(plotly_theme(fig_heat), use_container_width=True)
+                        else:
+                            st.markdown("<div style='height: 300px; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.2); font-size: 14px; font-weight: bold; border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;'>NO DATA SUBMITTED YET</div>", unsafe_allow_html=True)
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+
+    if tab_ops is not None:
+        with tab_ops:
+            st.markdown('<br>', unsafe_allow_html=True)
+            if current_df.empty:
+                st.info(f"ⓘ No performance data currently logged for {competition} Mission under these filters.")
+            else:
+                r3c1, r3c2 = st.columns([1, 1.2])
+                
+                with r3c1:
+                    st.markdown('<div class="panel">', unsafe_allow_html=True)
+                    st.subheader("Blockers vs. Performance Impact")
+                    st.markdown('<div class="chart-desc">Analyzes if external blockers are the root cause of poor performance. Size of the dot equals communication score.</div>', unsafe_allow_html=True)
+                    
+                    scatter_df = current_df.copy()
+                    scatter_df["blocked_jitter"] = scatter_df["blocked_tasks"] + np.random.uniform(-0.15, 0.15, size=len(scatter_df))
+                    
+                    fig4 = px.scatter(
+                        scatter_df, x="blocked_jitter", y="performance_pct", color="division", 
+                        size="communication_score", hover_data=["member_name", "blocked_tasks", "communication_score"],
+                        color_discrete_map=COLOR_MAP
+                    )
+                    fig4.update_yaxes(range=[0, 105], title="Performance %")
+                    fig4.update_xaxes(title="Count of Blocked Tasks (Slight jitter for visibility)", tickvals=[0,1,2,3,4,5])
+                    fig4.update_layout(height=450)
+                    st.plotly_chart(plotly_theme(fig4), use_container_width=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                with r3c2:
+                    st.markdown('<div class="panel">', unsafe_allow_html=True)
+                    st.subheader("Workforce Status Topology")
+                    st.markdown('<div class="chart-desc">Hierarchical view: Divisions → Roles → Statuses. Click into a block to zoom. Colors represent status severity.</div>', unsafe_allow_html=True)
+                    
+                    if not current_df.empty:
+                        tree_df = current_df.copy()
+                        status_map = {"Healthy": 1, "Watch": 2, "Critical": 3}
+                        tree_df["status_num"] = tree_df["status"].map(status_map)
+                        tree_df["count"] = 1
+                        
+                        fig6 = px.treemap(
+                            tree_df, path=[px.Constant("Organization"), "division", "role", "status"], 
+                            values="count", color="status_num", color_continuous_scale=["#22c55e", "#eab308", "#ef4444"],
+                            hover_data=["member_name"]
+                        )
+                        fig6.update_layout(coloraxis_showscale=False, margin=dict(t=10, l=10, r=10, b=10), height=450)
+                        st.plotly_chart(plotly_theme(fig6), use_container_width=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab_action:
+        st.markdown('<br>', unsafe_allow_html=True)
+        if filtered.empty:
+            st.info(f"ⓘ No performance data currently logged for {competition} Mission under these filters.")
+        else:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.subheader("⚠ Executive Intervention Required")
+            st.markdown('<div class="chart-desc">Auto-filtered list of personnel who are in Critical/Watch status, have open blockers, or are flagging for consecutive absences.</div>', unsafe_allow_html=True)
+        
+            risk_df = current_df[
+                current_df["status"].isin(["Critical", "Watch"])
+                | (current_df["blocked_tasks"] > 0)
+                | (current_df["attendance_risk_streak"] >= 2)
+            ].copy()
+        
+            if risk_df.empty:
+                st.success("ⓘ No current personnel risks detected under the selected filters. Operations are nominal.")
+            else:
+                risk_df["flags_text"] = risk_df["flags"].apply(flags_to_text)
+                risk_df = risk_df.sort_values(["status", "performance_pct"], ascending=[False, True])
+                
+                st.dataframe(
+                    risk_df[[
+                        "competition", "division", "member_name", "role", "performance_pct", "status", "blocked_tasks",
+                        "attendance_risk_streak", "communication_score", "flags_text", "notes"
+                    ]],
+                    use_container_width=True, hide_index=True,
+                )
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.subheader("▦ Complete Data Matrix")
+            st.markdown('<div class="chart-desc">The unfiltered, raw Google Sheets data flattened into a tabular matrix for external export or auditing.</div>', unsafe_allow_html=True)
+        
+            raw_view = filtered.copy()
+            raw_view["flags"] = raw_view["flags"].apply(flags_to_text)
+            
+            if competition == "All":
+                raw_view = raw_view.sort_values(["week_start", "competition", "division", "member_name"], ascending=[False, True, True, True])
+            else:
+                raw_view = raw_view.sort_values(["competition", "week_start", "division", "member_name"], ascending=[True, False, True, True])
+        
+            st.dataframe(raw_view, use_container_width=True, hide_index=True)
+        
+            st.download_button(
+                "⬇ Export Matrix to CSV",
+                data=raw_view.to_csv(index=False).encode("utf-8"),
+                file_name=f"av_admin_export_{date.today().isoformat()}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                type="primary"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
