@@ -313,30 +313,26 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
 st.set_page_config(page_title="AV PM Weekly Reporter", page_icon="❖", layout="wide")
 
 # -----------------------------------------------------------------------------
-# COMPETITION STATE INITIALIZATION & TOGGLE
+# EARLY STATE INITIALIZATION (Allows theme & filter updates without double reload)
 # -----------------------------------------------------------------------------
-if "competition" not in st.session_state:
-    st.session_state.competition = "Mars"
+if "comp_radio" not in st.session_state:
+    st.session_state.comp_radio = "Mars Mission"
+    
+competition = "Mars" if "Mars" in st.session_state.comp_radio else "Luna"
+st.session_state.competition = competition
 
-# Render the selector early so we can grab its state for CSS
-c_comp1, c_comp2 = st.columns([1, 1])
-with c_comp1:
-    st.markdown('<div class="glass" style="margin-bottom: 18px; padding: 16px 24px;">', unsafe_allow_html=True)
-    st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 16px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
-    comp_choice = st.radio(
-        "Competition Program",
-        options=["Mars Mission", "Luna Mission"],
-        index=0 if st.session_state.competition == "Mars" else 1,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-st.session_state.competition = "Mars" if comp_choice == "Mars Mission" else "Luna"
-competition = st.session_state.competition
+# Division Filter Logic based on selected competition
+if competition == "Luna":
+    # Restrict divisions to Electrical, Vehicle, and Software for Luna Mission
+    luna_allowed = ["electrical", "vehicle", "software"]
+    active_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in luna_allowed)]
+    if not active_divisions:
+        active_divisions = ["Electrical", "Vehicle Design", "Software"]
+else:
+    active_divisions = DIVISIONS
 
 # -----------------------------------------------------------------------------
-# DYNAMIC THEME ENGINE (Animated Transition between Mars & Luna)
+# DYNAMIC THEME ENGINE
 # -----------------------------------------------------------------------------
 if competition == "Mars":
     # Dark & Red
@@ -360,7 +356,7 @@ else:
     panel_bg = "#475569"    
     primary = "#f8fafc"     
     primary_hover = "#e2e8f0"
-    primary_text = "#1e3a8a" # Deep dark blue from the 'V' shadow
+    primary_text = "#1e3a8a" 
     primary_shadow = "rgba(255, 255, 255, 0.20)"
     logo_a_color = "#f8fafc"
     logo_a_shadow = "#64748b"
@@ -417,7 +413,7 @@ st.markdown(
         background: var(--panel);
         border: 1px solid var(--line);
         box-shadow: var(--shadow);
-        margin-bottom: 20px;
+        margin-bottom: 24px;
         color: #f8fafc;
     }}
     .hero-content {{ position: relative; z-index: 2; max-width: 920px; }}
@@ -425,39 +421,32 @@ st.markdown(
     .title {{ font-size: clamp(32px, 4.5vw, 64px); font-weight: 900; letter-spacing: -.05em; line-height: 1; margin: 5px 0 15px 0; color: #ffffff; }}
     .subtitle {{ color: #cbd5e1; font-size: 18px; max-width: 900px; line-height: 1.58; }}
     
-    /* Dynamic AV Logo Styling */
     .av-logo-container {{ display: flex; align-items: center; gap: 20px; }}
-    .av-logo {{
-        font-family: 'Arial Black', sans-serif;
-        font-size: 72px;
-        letter-spacing: -14px;
-        font-style: italic;
-        line-height: 1;
-        user-select: none;
-    }}
+    .av-logo {{ font-family: 'Arial Black', sans-serif; font-size: 72px; letter-spacing: -14px; font-style: italic; line-height: 1; user-select: none; }}
     .av-logo .a {{ color: var(--logo-a-color); text-shadow: 3px 3px 0px var(--logo-a-shadow); }}
     .av-logo .v {{ color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }}
 
     .glass {{
-        padding: 22px 24px;
+        padding: 22px 28px;
         border-radius: 20px;
         background: var(--panel);
         border: 1px solid var(--line);
         box-shadow: var(--shadow);
-        margin-bottom: 18px;
+        margin-bottom: 24px;
         color: var(--ink);
     }}
     
-    /* Segmented Control Styling */
+    /* Segmented Slider Control Styling */
     div.row-widget.stRadio > div {{
         display: flex;
         flex-direction: row;
         align-items: center;
-        gap: 20px;
+        gap: 16px;
         background: rgba(255,255,255,0.05);
-        padding: 10px 20px;
-        border-radius: 12px;
+        padding: 8px 16px;
+        border-radius: 100px;
         border: 1px solid var(--line);
+        width: fit-content;
     }}
 
     .division-pill {{
@@ -512,8 +501,6 @@ st.markdown(
         border-radius: 12px !important;
         font-weight: 800 !important;
     }}
-    
-    /* Force inner Streamlit text tags to inherit dynamic color */
     button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button *, .stDownloadButton > button * {{
         color: var(--primary-text) !important;
     }}
@@ -534,6 +521,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# -----------------------------------------------------------------------------
+# MAIN UI: HERO & LEGEND
+# -----------------------------------------------------------------------------
 st.markdown(
     f"""
 <div class="hero">
@@ -554,13 +544,35 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Only show divisions in the legend that are allowed in the current competition
+legend_html = "".join(
+    f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>'
+    for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions
+)
+st.markdown(f'<div class="glass"><b>Official Division Legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# COMPETITION TOGGLE SLIDER
+# -----------------------------------------------------------------------------
+st.markdown('<div class="glass" style="padding: 20px 28px;">', unsafe_allow_html=True)
+st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 18px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
+st.radio(
+    "Competition Program",
+    options=["Mars Mission", "Luna Mission"],
+    key="comp_radio", # Automatically writes value to session state upon click
+    horizontal=True,
+    label_visibility="collapsed",
+)
+st.markdown('</div>', unsafe_allow_html=True)
+
+
 # -----------------------------------------------------------------------------
 # SIDEBAR CONFIGURATION
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("Report setup")
     pm_name = st.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
-    division = st.selectbox("Division", DIVISIONS, index=0)
+    division = st.selectbox("Division", active_divisions, index=0)
 
     st.divider()
     st.subheader("Week Selection")
@@ -592,12 +604,6 @@ with st.sidebar:
     st.caption("Score weights")
     for name, weight in METRIC_WEIGHTS.items():
         st.write(f"**{name.title()}**: {int(weight * 100)}%")
-
-legend_html = "".join(
-    f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>'
-    for division_name, color in DIVISION_COLORS.items()
-)
-st.markdown(f'<div class="glass"><b>Official division legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
 
 sheet_ok, sheet_msg = google_sheet_ready()
 
