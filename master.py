@@ -37,40 +37,17 @@ SCOPES = [
 ]
 
 SHEET_COLUMNS = [
-    "timestamp",
-    "competition", 
-    "week_start",
-    "division",
-    "pm_name",
-    "member_name",
-    "role",
-    "tasks_assigned",
-    "hours_invested",
-    "tasks_completed",
-    "tasks_on_time",
-    "tasks_late",
-    "blocked_tasks",
-    "avg_quality_1_to_5",
-    "meetings_required",
-    "meetings_attended",
-    "pm_confidence_1_to_5",
-    "communication_score",
-    "notes",
-    "report_id",
-    "record_id",
-    "created_at",
-    "iso_year",
-    "iso_week",
-    "completion_score",
-    "quality_score",
-    "delivery_score",
-    "attendance_score",
-    "confidence_score",
-    "performance_score",
-    "performance_pct",
-    "status",
-    "flags",
+    "timestamp", "competition", "week_start", "division", "pm_name", "member_name",
+    "role", "tasks_assigned", "hours_invested", "tasks_completed", "tasks_on_time",
+    "tasks_late", "blocked_tasks", "avg_quality_1_to_5", "meetings_required",
+    "meetings_attended", "pm_confidence_1_to_5", "communication_score", "notes",
+    "report_id", "record_id", "created_at", "iso_year", "iso_week", "completion_score",
+    "quality_score", "delivery_score", "attendance_score", "confidence_score",
+    "performance_score", "performance_pct", "status", "flags",
 ]
+
+PLANNED_HEADERS = ["task", "start_date", "start_offset", "duration", "end_date", "phase"]
+ACTUAL_HEADERS = ["task", "actual_start_date", "actual_end_date", "percent_complete", "status", "owner", "notes", "last_updated"]
 
 def google_sheet_ready() -> tuple[bool, str]:
     missing = []
@@ -112,27 +89,22 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
         else:
             df["competition"] = df["competition"].replace(r'^\s*$', "Mars", regex=True).fillna("Mars")
             
-        # Ensure communication score exists for bubble sizes
         if "communication_score" not in df.columns:
             df["communication_score"] = 3.0
         else:
             df["communication_score"] = pd.to_numeric(df["communication_score"], errors='coerce').fillna(3.0)
             
-        # Clean numeric fields
         numeric_cols = ["performance_pct", "blocked_tasks", "tasks_completed", "avg_quality_1_to_5"]
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        # Always create week_start_dt
         if "week_start" in df.columns:
             df["week_start_dt"] = pd.to_datetime(df["week_start"], errors="coerce")
         else:
             df["week_start_dt"] = pd.NaT
             
-        # Return logic ensuring ordered format and preservation of required columns
         ordered = list(REQUIRED_COLUMNS) + ["week_start_dt"]
-
         for extra in list(SHEET_COLUMNS) + ["competition", "communication_score", "hours_invested"]:
             if extra not in ordered and extra in df.columns:
                 ordered.append(extra)
@@ -151,17 +123,115 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
         warnings_list.append(str(e))
         return pd.DataFrame(columns=SHEET_COLUMNS), warnings_list
 
+# --- SCHEDULE & GANTT HELPER FUNCTIONS ---
+def get_worksheet_by_name(_client, worksheet_name: str, headers: list[str]):
+    try:
+        worksheet = _client.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        worksheet = _client.add_worksheet(title=worksheet_name, rows=200, cols=len(headers))
+        worksheet.update("1:1", [headers])
+    
+    # Ensure headers exist if sheet was manually created but blank
+    existing = worksheet.row_values(1)
+    if not existing:
+        worksheet.update("1:1", [headers])
+        
+    return worksheet
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str], force_refresh_token=0) -> pd.DataFrame:
+    try:
+        worksheet = get_worksheet_by_name(_client, worksheet_name, required_headers)
+        records = worksheet.get_all_records()
+        if not records:
+            return pd.DataFrame(columns=required_headers)
+        
+        df = pd.DataFrame(records)
+        for h in required_headers:
+            if h not in df.columns:
+                df[h] = ""
+        return df
+    except Exception as e:
+        st.warning(f"Could not load schedule sheet {worksheet_name}: {e}")
+        return pd.DataFrame(columns=required_headers)
+
+def load_planned_schedule(mission: str, client, refresh_token) -> pd.DataFrame:
+    sheet_name = f"planned_schedule_{mission}_2026-2027"
+    df = load_schedule_sheet(client, sheet_name, PLANNED_HEADERS, refresh_token)
+    if not df.empty:
+        df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
+        df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
+        # Drop rows with invalid task or dates
+        df = df.dropna(subset=["task", "start_date"]).sort_values("start_date")
+    return df
+
+def load_actual_schedule(mission: str, client, refresh_token) -> pd.DataFrame:
+    sheet_name = f"actual_schedule_{mission}_2026-2027"
+    df = load_schedule_sheet(client, sheet_name, ACTUAL_HEADERS, refresh_token)
+    if not df.empty:
+        df["actual_start_date"] = pd.to_datetime(df["actual_start_date"], errors="coerce")
+        df["actual_end_date"] = pd.to_datetime(df["actual_end_date"], errors="coerce")
+        df["percent_complete"] = pd.to_numeric(df["percent_complete"], errors="coerce").fillna(0)
+    return df
+
+def build_plan_vs_actual_dataframe(planned_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
+    if planned_df.empty:
+        return pd.DataFrame()
+        
+    if actual_df.empty:
+        df = planned_df.copy()
+        df["schedule_status"] = "Not Updated"
+        for col in ACTUAL_HEADERS:
+            if col not in df.columns and col != "task":
+                df[col] = None
+        df["actual_start_variance_days"] = np.nan
+        df["actual_end_variance_days"] = np.nan
+        return df
+        
+    df = pd.merge(planned_df, actual_df, on="task", how="left")
+    
+    # Calculate variances safely
+    df["actual_start_variance_days"] = (df["actual_start_date"] - df["start_date"]).dt.days
+    df["actual_end_variance_days"] = (df["actual_end_date"] - df["end_date"]).dt.days
+    
+    def calculate_status(row):
+        # If no actual start date has been logged
+        if pd.isna(row.get("actual_start_date")):
+            return "Not Updated"
+            
+        # If the task has an actual end date
+        if pd.notna(row.get("actual_end_date")):
+            if pd.notna(row.get("end_date")) and row["actual_end_date"] > row["end_date"]:
+                return "Delayed"
+            return "Complete"
+            
+        # If started but not finished, check if today is past the planned end date
+        if pd.notna(row.get("end_date")):
+            today = pd.Timestamp.now().normalize()
+            if today > row["end_date"]:
+                return "Delayed"
+                
+        # Check actual status column if provided
+        status_override = str(row.get("status", "")).strip()
+        if status_override and status_override.lower() not in ["none", "nan", ""]:
+            return status_override
+            
+        return "In Progress"
+
+    df["schedule_status"] = df.apply(calculate_status, axis=1)
+    return df
+
 # -----------------------------------------------------------------------------
 # COMPETITION STATE INITIALIZATION
 # -----------------------------------------------------------------------------
 if "competition" not in st.session_state:
     st.session_state.competition = "All"
 
-# -----------------------------------------------------------------------------
-# DYNAMIC THEME ENGINE
-# -----------------------------------------------------------------------------
 competition = st.session_state.competition
 
+# -----------------------------------------------------------------------------
+# DYNAMIC THEME ENGINE (Including Logo Color Modifications)
+# -----------------------------------------------------------------------------
 if competition == "Mars":
     bg_top = "#1e293b"
     bg_bot = "#000000"
@@ -173,9 +243,14 @@ if competition == "Mars":
     primary_hover = "#dc2626"
     primary_text = "#ffffff"
     primary_shadow = "rgba(239, 68, 68, 0.25)"
+    
     logo_a_color = "#ef4444"
     logo_a_shadow = "#7f1d1d"
+    logo_v_color = "#ffffff"  # Mars V is white
+    logo_v_shadow = "#94a3b8"
+    
     mode_text = "Mars Mission Command"
+    
 elif competition == "Luna":
     bg_top = "#334155"      
     bg_bot = "#0f172a"      
@@ -187,8 +262,12 @@ elif competition == "Luna":
     primary_hover = "#e2e8f0"
     primary_text = "#1e3a8a" 
     primary_shadow = "rgba(255, 255, 255, 0.20)"
-    logo_a_color = "#f8fafc"
+    
+    logo_a_color = "#f8fafc"  # Luna A is white/silver
     logo_a_shadow = "#64748b"
+    logo_v_color = "#3b82f6"
+    logo_v_shadow = "#1e3a8a"
+    
     mode_text = "Luna Mission Command"
 else:
     # All Missions (Neutral/Blue Theme)
@@ -202,8 +281,12 @@ else:
     primary_hover = "#2563eb"
     primary_text = "#ffffff"
     primary_shadow = "rgba(59, 130, 246, 0.25)"
-    logo_a_color = "#60a5fa"
-    logo_a_shadow = "#1e3a8a"
+    
+    logo_a_color = "#ef4444"  # All Missions A is red
+    logo_a_shadow = "#7f1d1d"
+    logo_v_color = "#3b82f6"  # All Missions V is blue
+    logo_v_shadow = "#1e3a8a"
+    
     mode_text = "All Missions Command"
 
 st.markdown(
@@ -220,8 +303,11 @@ st.markdown(
         --primary-hover: {primary_hover};
         --primary-text: {primary_text};
         --primary-shadow: {primary_shadow};
+        
         --logo-a-color: {logo_a_color};
         --logo-a-shadow: {logo_a_shadow};
+        --logo-v-color: {logo_v_color};
+        --logo-v-shadow: {logo_v_shadow};
         
         --ink: #f8fafc;
         --line: rgba(255, 255, 255, 0.15);
@@ -231,7 +317,7 @@ st.markdown(
     /* ANIMATIONS: Add smooth fade to all major structural elements */
     [data-testid="stAppViewContainer"],
     [data-testid="stSidebar"],
-    .hero, .glass, button, button *, .av-logo .a, div[data-baseweb="tab-highlight"], 
+    .hero, .glass, button, button *, .av-logo .a, .av-logo .v, div[data-baseweb="tab-highlight"], 
     .stButton > button, [data-testid="stFormSubmitButton"] > button {{
         transition: all 0.7s ease-in-out !important;
     }}
@@ -270,7 +356,7 @@ st.markdown(
     .av-logo-container {{ display:flex; align-items:center; gap:20px; margin-bottom: 10px;}}
     .av-logo {{ font-family: 'Arial Black', sans-serif; font-size: 72px; letter-spacing: -14px; font-style: italic; line-height: 1; user-select: none; }}
     .av-logo .a {{ color: var(--logo-a-color); text-shadow: 3px 3px 0px var(--logo-a-shadow); }}
-    .av-logo .v {{ color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }}
+    .av-logo .v {{ color: var(--logo-v-color); text-shadow: 3px 3px 0px var(--logo-v-shadow); mix-blend-mode: normal; }}
     
     .hero-content {{ position:relative; z-index:2; max-width: 1040px; }}
     .eyebrow {{ color:#bfdbfe; font-size:13px; letter-spacing:.18em; text-transform:uppercase; font-weight:900; }}
@@ -339,7 +425,6 @@ st.markdown(
     .kpi-value {{ color:#ffffff; font-size:48px; font-weight:950; letter-spacing:-.06em; margin-top:8px; position:relative; z-index:2; }}
     .kpi-sub {{ color:#cbd5e1; font-size:14px; margin-top:6px; position:relative; z-index:2; }}
     
-    /* Segmented Control Styling */
     div.row-widget.stRadio > div {{
         display: flex;
         flex-direction: row;
@@ -354,7 +439,6 @@ st.markdown(
         margin: 0 auto;
     }}
     
-    /* Tabs Styling Sync */
     button[data-baseweb="tab"] {{
         color: #cbd5e1 !important;
         font-weight: 700 !important;
@@ -369,7 +453,6 @@ st.markdown(
         height: 3px !important;
     }}
 
-    /* Standard Buttons */
     .stButton > button {{
         background: rgba(255,255,255,0.1) !important; 
         color: #ffffff !important;
@@ -379,7 +462,6 @@ st.markdown(
     }}
     .stButton > button * {{ color: #ffffff !important; }}
     
-    /* Primary Accent Buttons */
     button[kind="primary"], [data-testid="stFormSubmitButton"] > button, .stDownloadButton > button {{
         background: var(--primary) !important;
         color: var(--primary-text) !important;
@@ -399,7 +481,7 @@ st.markdown(
     }}
     
     h1, h2, h3, p, li {{ color: var(--ink) !important; }}
-    .chart-desc {{ font-size: 14px; color: #94a3b8; margin-top: -10px; margin-bottom: 20px; border-left: 3px solid var(--blue); padding-left: 12px;}}
+    .chart-desc {{ font-size: 14px; color: #94a3b8; margin-top: -10px; margin-bottom: 20px; border-left: 3px solid var(--primary); padding-left: 12px;}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -503,16 +585,14 @@ raw_df, warnings = load_reports_from_google_sheets(client, worksheet_name, force
 if not raw_df.empty:
     if "week_start_dt" not in raw_df.columns:
         raw_df["week_start_dt"] = pd.to_datetime(raw_df.get("week_start", ""), errors="coerce")
-        
     if "division" not in raw_df.columns:
         raw_df["division"] = ""
-        
     if "member_name" not in raw_df.columns:
         raw_df["member_name"] = ""
 
 df = annotate_attendance_streaks(raw_df)
 
-# 1) Apply Competition Filter globally
+# Apply Competition Filter globally
 if competition != "All":
     df = df[df["competition"] == competition]
 
@@ -520,7 +600,6 @@ if df.empty:
     st.warning(f"No records match the active {competition} Mission filter. (If you just cleared the database, this is completely normal!)")
     st.stop()
 
-# Determine allowed divisions based on mission mode so the UI never hides them
 if competition == "Luna":
     luna_allowed = ["electrical", "vehicle", "software"]
     available_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in luna_allowed)]
@@ -544,7 +623,6 @@ st.markdown('<div class="panel" style="padding: 15px 36px; margin-bottom: 24px;"
 selected_weeks = st.multiselect("Timeline Filter (Affects entire dashboard)", options=available_weeks, default=available_weeks[-6:] if len(available_weeks) > 6 else available_weeks, format_func=week_label)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# 2) Apply Final Filters
 filtered = df[
     (df["week_start"].isin(selected_weeks) if selected_weeks else True) &
     (df["division"].isin(selected_divs) if selected_divs else True)
@@ -574,21 +652,22 @@ with k4: st.markdown(kpi_card("Attendance Risks", str(attendance_flags), "Consec
 st.markdown('<br>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# TABBED DASHBOARD LAYOUT (DYNAMIC BASED ON MISSION)
+# TABBED DASHBOARD LAYOUT 
 # -----------------------------------------------------------------------------
 if competition == "All":
-    # Hide deep-dive charts when combining completely different missions
-    tab_exec, tab_action = st.tabs([
+    tab_exec, tab_schedule, tab_action = st.tabs([
         "❖ Executive Overview", 
+        "📅 Mission Schedule",
         "⚠️ Action Center"
     ])
     tab_div = None
     tab_ops = None
 else:
-    tab_exec, tab_div, tab_ops, tab_action = st.tabs([
+    tab_exec, tab_div, tab_ops, tab_schedule, tab_action = st.tabs([
         "❖ Executive Overview", 
         "🔬 Division Intelligence", 
         "⛒ Bottlenecks & Health", 
+        "📅 Mission Schedule",
         "⚠️ Action Center"
     ])
 
@@ -756,6 +835,92 @@ if tab_ops is not None:
                 fig6.update_layout(coloraxis_showscale=False, margin=dict(t=10, l=10, r=10, b=10), height=450)
                 st.plotly_chart(plotly_theme(fig6), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
+
+# ==========================================
+# TAB: MISSION SCHEDULE GANTT TRACKER
+# ==========================================
+def render_mission_schedule(render_mission: str, db_client, r_token):
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.markdown(f"<h2>🚀 {render_mission} Mission Schedule Tracker</h2>", unsafe_allow_html=True)
+    st.markdown('<div class="chart-desc">Dynamic Gantt tracking comparing planned execution vs actual recorded progress. Missing tables are safely generated on load.</div>', unsafe_allow_html=True)
+
+    plan_df = load_planned_schedule(render_mission, db_client, r_token)
+    act_df = load_actual_schedule(render_mission, db_client, r_token)
+
+    if plan_df.empty:
+        st.info(f"No planned schedule data found for {render_mission} Mission yet. Add tasks to `planned_schedule_{render_mission}_2026-2027` in Google Sheets.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    # 1. Plot Planned Gantt (Pure Baseline)
+    st.subheader("Baseline Planned Timeline")
+    fig_plan = px.timeline(plan_df, x_start="start_date", x_end="end_date", y="task", color="phase", hover_data=["task", "phase", "duration"])
+    fig_plan.update_yaxes(autorange="reversed", title="")
+    fig_plan.update_xaxes(title="Timeline")
+    fig_plan.update_layout(height=max(300, len(plan_df) * 30))
+    st.plotly_chart(plotly_theme(fig_plan), use_container_width=True)
+
+    if act_df.empty:
+        st.warning(f"Actual progress tracking is ready. Fill the `actual_schedule_{render_mission}_2026-2027` tab to compare planned vs real execution.")
+    else:
+        st.divider()
+        st.subheader("Plan vs. Actual Execution")
+        
+        merged_df = build_plan_vs_actual_dataframe(plan_df, act_df)
+        
+        # Calculate Quick KPIs
+        if "percent_complete" in merged_df.columns:
+            avg_pct = merged_df["percent_complete"].mean()
+        else:
+            avg_pct = 0
+            
+        st.markdown('<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:20px;">', unsafe_allow_html=True)
+        completed = len(merged_df[merged_df["schedule_status"] == "Complete"])
+        delayed = len(merged_df[merged_df["schedule_status"] == "Delayed"])
+        at_risk = len(merged_df[merged_df["schedule_status"] == "At Risk"])
+        not_updated = len(merged_df[merged_df["schedule_status"].isin(["Not Updated", "Not Started"])])
+        
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Avg % Complete", f"{avg_pct:.1f}%")
+        m2.metric("Tasks Complete", completed)
+        m3.metric("Tasks Delayed", delayed)
+        m4.metric("Tasks At Risk", at_risk)
+        m5.metric("Tasks Missing Data", not_updated)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Build Comparative Overlay Gantt
+        plot_items = []
+        for _, row in merged_df.iterrows():
+            if pd.notna(row.get("start_date")) and pd.notna(row.get("end_date")):
+                plot_items.append({"task": row["task"], "start": row["start_date"], "end": row["end_date"], "Type": "Planned Schedule"})
+            if pd.notna(row.get("actual_start_date")) and pd.notna(row.get("actual_end_date")):
+                plot_items.append({"task": row["task"], "start": row["actual_start_date"], "end": row["actual_end_date"], "Type": "Actual Execution"})
+                
+        if plot_items:
+            overlay_df = pd.DataFrame(plot_items)
+            # Use dynamic primary color for the actuals so it matches the mission theme
+            color_map = {"Planned Schedule": "rgba(255,255,255,0.25)", "Actual Execution": primary}
+            
+            fig_overlay = px.timeline(overlay_df, x_start="start", x_end="end", y="task", color="Type", barmode="group", color_discrete_map=color_map)
+            fig_overlay.update_yaxes(autorange="reversed", title="")
+            fig_overlay.update_xaxes(title="Timeline Overlay")
+            fig_overlay.update_layout(height=max(400, len(plan_df) * 45))
+            st.plotly_chart(plotly_theme(fig_overlay), use_container_width=True)
+            
+        st.markdown("##### Variance Analytics Data")
+        view_cols = ["task", "phase", "start_date", "end_date", "actual_start_date", "actual_end_date", "percent_complete", "schedule_status", "actual_start_variance_days", "actual_end_variance_days", "owner", "notes"]
+        valid_cols = [c for c in view_cols if c in merged_df.columns]
+        st.dataframe(merged_df[valid_cols], use_container_width=True, hide_index=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab_schedule:
+    st.markdown('<br>', unsafe_allow_html=True)
+    if competition == "All":
+        render_mission_schedule("Mars", client, st.session_state.force_refresh)
+        render_mission_schedule("Luna", client, st.session_state.force_refresh)
+    else:
+        render_mission_schedule(competition, client, st.session_state.force_refresh)
 
 # ==========================================
 # TAB 4: ACTION CENTER & MATRIX
