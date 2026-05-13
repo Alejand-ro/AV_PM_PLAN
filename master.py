@@ -49,6 +49,15 @@ SHEET_COLUMNS = [
 PLANNED_HEADERS = ["task", "start_date", "start_offset", "duration", "end_date", "phase"]
 ACTUAL_HEADERS = ["task", "actual_start_date", "actual_end_date", "percent_complete", "status", "owner", "notes", "last_updated"]
 
+# --- DYNAMIC YEARLY CYCLES ---
+# Automatically scales: Previous Cycle, Current Cycle, Next Cycle based on the current year.
+_cy = date.today().year
+DYNAMIC_CYCLES = [
+    f"{_cy-1}-{_cy}",
+    f"{_cy}-{_cy+1}",
+    f"{_cy+1}-{_cy+2}"
+]
+
 def google_sheet_ready() -> tuple[bool, str]:
     missing = []
     if "gcp_service_account" not in st.secrets:
@@ -124,27 +133,16 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
 
 # --- SCHEDULE & GANTT HELPER FUNCTIONS ---
 def get_schedule_tab_name(mission: str, cycle: str, kind: str) -> str:
-    m = "Mars" if mission == "Mars" else "luna"
+    # Strictly formats as 'Mars' or 'Luna' to match Google Sheets exactly
+    m = "Mars" if mission == "Mars" else "Luna"
     return f"{kind}_schedule_{m}_{cycle}"
-
-def get_worksheet_by_name(_client, worksheet_name: str, headers: list[str]):
-    try:
-        worksheet = _client.worksheet(worksheet_name)
-    except gspread.WorksheetNotFound:
-        worksheet = _client.add_worksheet(title=worksheet_name, rows=200, cols=len(headers))
-        worksheet.update("1:1", [headers])
-    
-    existing = worksheet.row_values(1)
-    if not existing:
-        worksheet.update("1:1", [headers])
-        
-    return worksheet
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str], force_refresh_token=0) -> pd.DataFrame:
+    # Only loads. Does NOT create an empty tab in Google sheets if missing.
     try:
-        worksheet = get_worksheet_by_name(_client, worksheet_name, required_headers)
-        records = worksheet.get_all_records()
+        ws = _client.worksheet(worksheet_name)
+        records = ws.get_all_records()
         if not records:
             return pd.DataFrame(columns=required_headers)
         
@@ -153,11 +151,24 @@ def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str
             if h not in df.columns:
                 df[h] = ""
         return df
+    except gspread.WorksheetNotFound:
+        return pd.DataFrame(columns=required_headers)
     except Exception as e:
         return pd.DataFrame(columns=required_headers)
 
 def save_schedule_sheet(_client, worksheet_name: str, df: pd.DataFrame, headers: list[str]):
-    ws = get_worksheet_by_name(_client, worksheet_name, headers)
+    # Attempts to save. IF tab is missing, creates it, writes headers, and appends rows.
+    try:
+        ws = _client.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        ws = _client.add_worksheet(title=worksheet_name, rows=200, cols=len(headers))
+        ws.update("1:1", [headers])
+    
+    # In case someone manually created a blank sheet without headers
+    existing = ws.row_values(1)
+    if not existing:
+        ws.update("1:1", [headers])
+        
     save_df = df.copy()
     
     for col in save_df.columns:
@@ -662,7 +673,7 @@ if current_page == "⌖ Gantt Management":
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     gantt_mission = c1.selectbox("Target Mission", ["Mars", "Luna"])
-    gantt_cycle = c2.selectbox("Yearly Cycle", ["2026-2027", "2027-2028"])
+    gantt_cycle = c2.selectbox("Yearly Cycle", DYNAMIC_CYCLES, index=1)
     gantt_mode = c3.radio("Schedule Mode", ["Planned Baseline", "Actual Outcome"])
     st.markdown('</div>', unsafe_allow_html=True)
     
@@ -749,7 +760,7 @@ elif current_page == "◷ Mission Schedule":
         st.rerun()
         
     st.markdown('<div class="panel" style="padding: 15px 36px; margin-bottom: 24px;">', unsafe_allow_html=True)
-    cycle_choice = st.selectbox("Active Yearly Cycle", ["2026-2027", "2027-2028"])
+    cycle_choice = st.selectbox("Active Yearly Cycle", DYNAMIC_CYCLES, index=1)
     st.markdown('</div>', unsafe_allow_html=True)
     
     client = get_spreadsheet()
