@@ -133,7 +133,6 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
         # Return logic ensuring ordered format and preservation of required columns
         ordered = list(REQUIRED_COLUMNS) + ["week_start_dt"]
 
-        # Ensure we also don't drop standard sheet columns (like performance_pct) during the enforcement
         for extra in list(SHEET_COLUMNS) + ["competition", "communication_score", "hours_invested"]:
             if extra not in ordered and extra in df.columns:
                 ordered.append(extra)
@@ -513,21 +512,24 @@ if not raw_df.empty:
 
 df = annotate_attendance_streaks(raw_df)
 
-if df.empty:
-    st.warning("No data found in the reports worksheet.")
-    st.stop()
-
 # 1) Apply Competition Filter globally
 if competition != "All":
     df = df[df["competition"] == competition]
 
 if df.empty:
-    st.warning(f"No records match the active {competition} Mission filter.")
+    st.warning(f"No records match the active {competition} Mission filter. (If you just cleared the database, this is completely normal!)")
     st.stop()
 
-# Generate valid filter options based on the resulting dataframe
+# Determine allowed divisions based on mission mode so the UI never hides them
+if competition == "Luna":
+    luna_allowed = ["electrical", "vehicle", "software"]
+    available_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in luna_allowed)]
+    if not available_divisions:
+        available_divisions = ["Power and Electrical Systems", "Vehicle Design & Structures", "Software & Hardware"]
+elif competition == "Mars" or competition == "All":
+    available_divisions = DIVISIONS
+
 available_weeks = sorted([w for w in df["week_start"].dropna().unique().tolist() if w])
-available_divisions = sorted([d for d in df["division"].unique() if pd.notna(d)])
 
 with st.sidebar:
     st.divider()
@@ -658,17 +660,21 @@ with tab_div:
     st.markdown("### Metric Weakness by Division")
     st.markdown('<div class="chart-desc" style="margin-left: 0;">Heatmaps explicitly styled to match each division\'s brand color. Darker/brighter blocks show which specific metric is currently excelling or dragging the team down.</div>', unsafe_allow_html=True)
     
+    # Render all active divisions cleanly. If data is missing for one, show an elegant empty state.
+    cols = st.columns(len(selected_divs))
+    
     if not current_df.empty:
-        divisions_present = sorted(current_df["division"].unique())
-        cols = st.columns(len(divisions_present))
-        
         heat_df = current_df.groupby("division")[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
+    else:
+        heat_df = pd.DataFrame()
         
-        for idx, div_name in enumerate(divisions_present):
-            with cols[idx]:
-                st.markdown(f'<div class="panel" style="padding: 20px; text-align: center;">', unsafe_allow_html=True)
-                st.markdown(f"<h4 style='color: {COLOR_MAP.get(div_name, '#ffffff')}; margin-bottom: 10px;'>{div_name}</h4>", unsafe_allow_html=True)
-                
+    for idx, div_name in enumerate(selected_divs):
+        with cols[idx]:
+            st.markdown(f'<div class="panel" style="padding: 20px; text-align: center;">', unsafe_allow_html=True)
+            st.markdown(f"<h4 style='color: {COLOR_MAP.get(div_name, '#ffffff')}; margin-bottom: 10px;'>{div_name}</h4>", unsafe_allow_html=True)
+            
+            # Check if this division has data in the heatmap dataframe
+            if div_name in heat_df.index and not heat_df.loc[[div_name]].isna().all().all():
                 div_data = heat_df.loc[[div_name]].T
                 div_data.columns = ["Score"]
                 
@@ -691,7 +697,11 @@ with tab_div:
                 )
                 fig_heat.update_xaxes(visible=False)
                 st.plotly_chart(plotly_theme(fig_heat), use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                # Elegant NO DATA placeholder
+                st.markdown("<div style='height: 300px; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.2); font-size: 14px; font-weight: bold; border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;'>NO DATA SUBMITTED YET</div>", unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
 # TAB 3: BOTTLENECKS & HEALTH
