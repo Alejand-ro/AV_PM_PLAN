@@ -131,7 +131,6 @@ def get_worksheet_by_name(_client, worksheet_name: str, headers: list[str]):
         worksheet = _client.add_worksheet(title=worksheet_name, rows=200, cols=len(headers))
         worksheet.update("1:1", [headers])
     
-    # Ensure headers exist if sheet was manually created but blank
     existing = worksheet.row_values(1)
     if not existing:
         worksheet.update("1:1", [headers])
@@ -161,7 +160,6 @@ def load_planned_schedule(mission: str, client, refresh_token) -> pd.DataFrame:
     if not df.empty:
         df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
         df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
-        # Drop rows with invalid task or dates
         df = df.dropna(subset=["task", "start_date"]).sort_values("start_date")
     return df
 
@@ -190,28 +188,23 @@ def build_plan_vs_actual_dataframe(planned_df: pd.DataFrame, actual_df: pd.DataF
         
     df = pd.merge(planned_df, actual_df, on="task", how="left")
     
-    # Calculate variances safely
     df["actual_start_variance_days"] = (df["actual_start_date"] - df["start_date"]).dt.days
     df["actual_end_variance_days"] = (df["actual_end_date"] - df["end_date"]).dt.days
     
     def calculate_status(row):
-        # If no actual start date has been logged
         if pd.isna(row.get("actual_start_date")):
             return "Not Updated"
             
-        # If the task has an actual end date
         if pd.notna(row.get("actual_end_date")):
             if pd.notna(row.get("end_date")) and row["actual_end_date"] > row["end_date"]:
                 return "Delayed"
             return "Complete"
             
-        # If started but not finished, check if today is past the planned end date
         if pd.notna(row.get("end_date")):
             today = pd.Timestamp.now().normalize()
             if today > row["end_date"]:
                 return "Delayed"
                 
-        # Check actual status column if provided
         status_override = str(row.get("status", "")).strip()
         if status_override and status_override.lower() not in ["none", "nan", ""]:
             return status_override
@@ -230,7 +223,7 @@ if "competition" not in st.session_state:
 competition = st.session_state.competition
 
 # -----------------------------------------------------------------------------
-# DYNAMIC THEME ENGINE (Including Logo Color Modifications)
+# DYNAMIC THEME ENGINE
 # -----------------------------------------------------------------------------
 if competition == "Mars":
     bg_top = "#1e293b"
@@ -246,7 +239,7 @@ if competition == "Mars":
     
     logo_a_color = "#ef4444"
     logo_a_shadow = "#7f1d1d"
-    logo_v_color = "#ffffff"  # Mars V is white
+    logo_v_color = "#ffffff"
     logo_v_shadow = "#94a3b8"
     
     mode_text = "Mars Mission Command"
@@ -263,14 +256,13 @@ elif competition == "Luna":
     primary_text = "#1e3a8a" 
     primary_shadow = "rgba(255, 255, 255, 0.20)"
     
-    logo_a_color = "#f8fafc"  # Luna A is white/silver
+    logo_a_color = "#f8fafc"
     logo_a_shadow = "#64748b"
     logo_v_color = "#3b82f6"
     logo_v_shadow = "#1e3a8a"
     
     mode_text = "Luna Mission Command"
 else:
-    # All Missions (Neutral/Blue Theme)
     bg_top = "#1e293b"
     bg_bot = "#000000"
     side_top = "#1e293b"
@@ -282,9 +274,9 @@ else:
     primary_text = "#ffffff"
     primary_shadow = "rgba(59, 130, 246, 0.25)"
     
-    logo_a_color = "#ef4444"  # All Missions A is red
+    logo_a_color = "#ef4444"
     logo_a_shadow = "#7f1d1d"
-    logo_v_color = "#3b82f6"  # All Missions V is blue
+    logo_v_color = "#3b82f6"
     logo_v_shadow = "#1e3a8a"
     
     mode_text = "All Missions Command"
@@ -314,7 +306,6 @@ st.markdown(
         --shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
     }}
     
-    /* ANIMATIONS: Add smooth fade to all major structural elements */
     [data-testid="stAppViewContainer"],
     [data-testid="stSidebar"],
     .hero, .glass, button, button *, .av-logo .a, .av-logo .v, div[data-baseweb="tab-highlight"], 
@@ -902,7 +893,8 @@ def render_mission_schedule(render_mission: str, db_client, r_token):
             # Use dynamic primary color for the actuals so it matches the mission theme
             color_map = {"Planned Schedule": "rgba(255,255,255,0.25)", "Actual Execution": primary}
             
-            fig_overlay = px.timeline(overlay_df, x_start="start", x_end="end", y="task", color="Type", barmode="group", color_discrete_map=color_map)
+            fig_overlay = px.timeline(overlay_df, x_start="start", x_end="end", y="task", color="Type", color_discrete_map=color_map)
+            fig_overlay.update_layout(barmode="group")
             fig_overlay.update_yaxes(autorange="reversed", title="")
             fig_overlay.update_xaxes(title="Timeline Overlay")
             fig_overlay.update_layout(height=max(400, len(plan_df) * 45))
