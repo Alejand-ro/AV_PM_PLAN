@@ -53,6 +53,10 @@ def week_range_label(monday_date) -> str:
         return f"{monday_date:%b %d} – {friday:%b %d, %Y}"
     return f"{monday_date:%b %d, %Y} – {friday:%b %d, %Y}"
 
+def build_week_options(center_monday, weeks_back: int = 12, weeks_forward: int = 8):
+    return [center_monday + timedelta(weeks=i) for i in range(-weeks_back, weeks_forward + 1)]
+
+
 # --- GOOGLE SHEETS CONFIGURATION ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -61,7 +65,7 @@ SCOPES = [
 
 SHEET_COLUMNS = [
     "timestamp",
-    "competition", # ADDED FOR MARS/LUNA
+    "competition", 
     "week_start",
     "division",
     "pm_name",
@@ -97,7 +101,7 @@ SHEET_COLUMNS = [
 
 DRAFT_COLUMNS = [
     "draft_key",
-    "competition", # ADDED FOR MARS/LUNA
+    "competition", 
     "week_start",
     "week_end",
     "division",
@@ -184,7 +188,6 @@ def normalize_tracker_df(records: list[dict], template_df: pd.DataFrame) -> pd.D
         if col not in df.columns:
             df[col] = 0 if col not in ["member_name", "role", "notes"] else ""
             
-    # Ensure there are 50 rows, padding with empty if needed
     if len(df) < 50:
         missing_rows = 50 - len(df)
         pad_data = {c: ("" if c in ["member_name", "role", "notes"] else 0) for c in template_df.columns}
@@ -310,47 +313,89 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
 st.set_page_config(page_title="AV PM Weekly Reporter", page_icon="❖", layout="wide")
 
 # -----------------------------------------------------------------------------
-# COMPETITION STATE INITIALIZATION
+# COMPETITION STATE INITIALIZATION & TOGGLE
 # -----------------------------------------------------------------------------
 if "competition" not in st.session_state:
     st.session_state.competition = "Mars"
 
-# Handle Competition Select (Sync with session state)
-st.markdown('<div class="glass" style="margin-bottom: 18px; padding: 16px 24px;">', unsafe_allow_html=True)
-st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 16px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
-
-# Select mode
-comp_choice = st.radio(
-    "Competition Program",
-    options=["Mars Mission", "Luna Mission"],
-    index=0 if st.session_state.competition == "Mars" else 1,
-    horizontal=True,
-    label_visibility="collapsed",
-    help="Select which competition program this weekly report belongs to."
-)
-st.markdown('</div>', unsafe_allow_html=True)
+# Render the selector early so we can grab its state for CSS
+c_comp1, c_comp2 = st.columns([1, 1])
+with c_comp1:
+    st.markdown('<div class="glass" style="margin-bottom: 18px; padding: 16px 24px;">', unsafe_allow_html=True)
+    st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 16px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
+    comp_choice = st.radio(
+        "Competition Program",
+        options=["Mars Mission", "Luna Mission"],
+        index=0 if st.session_state.competition == "Mars" else 1,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 st.session_state.competition = "Mars" if comp_choice == "Mars Mission" else "Luna"
 competition = st.session_state.competition
 
-# Dynamic Logo and Colors based on mode
-av_a_color = "#ef4444" if competition == "Mars" else "#e2e8f0"
-av_a_shadow = "#7f1d1d" if competition == "Mars" else "#64748b"
+# -----------------------------------------------------------------------------
+# DYNAMIC THEME ENGINE (Animated Transition between Mars & Luna)
+# -----------------------------------------------------------------------------
+if competition == "Mars":
+    # Dark & Red
+    bg_top = "#1e293b"
+    bg_bot = "#000000"
+    side_top = "#1e293b"
+    side_bot = "#111827"
+    panel_bg = "#1e293b"
+    primary = "#ef4444"
+    primary_hover = "#dc2626"
+    primary_text = "#ffffff"
+    primary_shadow = "rgba(239, 68, 68, 0.25)"
+    logo_a_color = "#ef4444"
+    logo_a_shadow = "#7f1d1d"
+else:
+    # Lighter Dark & White/Silver
+    bg_top = "#334155"      # Lighter twilight slate
+    bg_bot = "#0f172a"      # Deep navy/black
+    side_top = "#334155"
+    side_bot = "#1e293b"
+    panel_bg = "#475569"    # Lighter silvery slate panels
+    primary = "#f8fafc"     # White/Silver accent
+    primary_hover = "#e2e8f0"
+    primary_text = "#0f172a" # Dark text on white buttons
+    primary_shadow = "rgba(255, 255, 255, 0.20)"
+    logo_a_color = "#f8fafc"
+    logo_a_shadow = "#64748b"
 
 st.markdown(
     f"""
 <style>
     :root {{
-        --bg-dark: #000000;
-        --panel: #1e293b;
+        --bg-top: {bg_top};
+        --bg-bot: {bg_bot};
+        --side-top: {side_top};
+        --side-bot: {side_bot};
+        --panel: {panel_bg};
+        --primary: {primary};
+        --primary-hover: {primary_hover};
+        --primary-text: {primary_text};
+        --primary-shadow: {primary_shadow};
+        --logo-a-color: {logo_a_color};
+        --logo-a-shadow: {logo_a_shadow};
+        
         --ink: #f8fafc;
-        --muted: #94a3b8;
-        --line: rgba(255, 255, 255, 0.12);
+        --line: rgba(255, 255, 255, 0.15);
         --shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
     }}
     
+    /* ANIMATIONS: Add smooth fade to all major structural elements */
+    [data-testid="stAppViewContainer"],
+    [data-testid="stSidebar"],
+    .hero, .glass, button, .av-logo .a, div[data-baseweb="tab-highlight"], 
+    .stButton > button, [data-testid="stFormSubmitButton"] > button {{
+        transition: all 0.7s ease-in-out !important;
+    }}
+    
     [data-testid="stAppViewContainer"] {{
-        background: radial-gradient(circle at top, #1e293b 0%, #000000 100%);
+        background: radial-gradient(circle at top, var(--bg-top) 0%, var(--bg-bot) 100%);
         background-attachment: fixed;
         color: var(--ink);
     }}
@@ -358,7 +403,7 @@ st.markdown(
     [data-testid="stHeader"] {{ background: rgba(15, 23, 42, 0); }}
     
     [data-testid="stSidebar"] {{
-        background: linear-gradient(180deg, #1e293b 0%, #111827 100%);
+        background: linear-gradient(180deg, var(--side-top) 0%, var(--side-bot) 100%);
         border-right: 1px solid var(--line);
     }}
     
@@ -380,7 +425,7 @@ st.markdown(
     .title {{ font-size: clamp(32px, 4.5vw, 64px); font-weight: 900; letter-spacing: -.05em; line-height: 1; margin: 5px 0 15px 0; color: #ffffff; }}
     .subtitle {{ color: #cbd5e1; font-size: 18px; max-width: 900px; line-height: 1.58; }}
     
-    /* AV Logo Styling (Dynamic based on Mars/Luna) */
+    /* Dynamic AV Logo Styling */
     .av-logo-container {{ display: flex; align-items: center; gap: 20px; }}
     .av-logo {{
         font-family: 'Arial Black', sans-serif;
@@ -390,7 +435,7 @@ st.markdown(
         line-height: 1;
         user-select: none;
     }}
-    .av-logo .a {{ color: {av_a_color}; text-shadow: 3px 3px 0px {av_a_shadow}; }}
+    .av-logo .a {{ color: var(--logo-a-color); text-shadow: 3px 3px 0px var(--logo-a-shadow); }}
     .av-logo .v {{ color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }}
 
     .glass {{
@@ -435,21 +480,21 @@ st.markdown(
     
     /* Tabs Styling */
     button[data-baseweb="tab"] {{
-        color: #94a3b8 !important;
+        color: #cbd5e1 !important;
         font-weight: 700 !important;
         font-size: 16px !important;
         padding: 10px 20px !important;
     }}
     button[data-baseweb="tab"][aria-selected="true"] {{
-        color: #f8fafc !important;
+        color: #ffffff !important;
     }}
     div[data-baseweb="tab-highlight"] {{
-        background-color: #ef4444 !important;
+        background-color: var(--primary) !important;
         height: 3px !important;
     }}
 
-    /* Solid Color Buttons */
-    .stButton > button, [data-testid="stFormSubmitButton"] > button {{
+    /* Standard Buttons (Blue fallback) */
+    .stButton > button {{
         background: #2563eb !important; 
         color: #ffffff !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
@@ -457,12 +502,19 @@ st.markdown(
         font-weight: 800 !important;
     }}
     
-    /* Primary buttons (Solid Red) */
-    button[kind="primary"] {{
-        background: #ef4444 !important;
-        box-shadow: 0 8px 20px rgba(239, 68, 68, 0.25) !important;
+    /* Primary Accent Buttons (Dynamic Red or White) */
+    button[kind="primary"], [data-testid="stFormSubmitButton"] > button, .stDownloadButton > button {{
+        background: var(--primary) !important;
+        color: var(--primary-text) !important;
+        box-shadow: 0 8px 20px var(--primary-shadow) !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        border-radius: 12px !important;
+        font-weight: 800 !important;
     }}
-    button[kind="primary"]:hover {{ background: #dc2626 !important; transform: translateY(-1px); }}
+    button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover, .stDownloadButton > button:hover {{ 
+        background: var(--primary-hover) !important; 
+        transform: translateY(-1px); 
+    }}
     
     /* Fix inputs */
     input, textarea, [data-baseweb="select"] {{ color: #f8fafc !important; }}
@@ -668,7 +720,7 @@ with st.form("weekly_data_form"):
             key="editor_tab2",
             use_container_width=True,
             hide_index=True,
-            height=480, # Scrollable fixed height
+            height=480, 
             column_config=col_config_locked
         )
     with tab3:
@@ -677,13 +729,13 @@ with st.form("weekly_data_form"):
             key="editor_tab3",
             use_container_width=True,
             hide_index=True,
-            height=480, # Scrollable fixed height
+            height=480, 
             column_config=col_config_locked
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
-    # The explicit save button to lock in edits
-    submit_edits = st.form_submit_button("☑ Save Cloud Draft & Update Preview Below", use_container_width=True)
+    # The explicit save button to lock in edits uses type="primary" to pull the dynamic Mars/Luna color
+    submit_edits = st.form_submit_button("☑ Save Cloud Draft & Update Preview Below", type="primary", use_container_width=True)
 
 # Process the save event AFTER the form is submitted
 if submit_edits:
@@ -774,7 +826,7 @@ else:
     st.caption("Add the Google service account and Sheet settings in Streamlit Cloud → Manage app → Settings → Secrets.")
 
 replace_existing = st.checkbox(
-    "Replace any previous rows for this same PM / Division / Week / Competition",
+    f"Replace any previous rows for {competition} / {pm_name} / {division} / {week_start}",
     value=True,
     help="Recommended. Prevents duplicate weekly submissions when a PM fixes and resubmits a report.",
 )
