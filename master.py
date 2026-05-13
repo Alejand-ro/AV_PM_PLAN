@@ -574,14 +574,23 @@ with k4: st.markdown(kpi_card("Attendance Risks", str(attendance_flags), "Consec
 st.markdown('<br>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# TABBED DASHBOARD LAYOUT
+# TABBED DASHBOARD LAYOUT (DYNAMIC BASED ON MISSION)
 # -----------------------------------------------------------------------------
-tab_exec, tab_div, tab_ops, tab_action = st.tabs([
-    "❖ Executive Overview", 
-    "🔬 Division Intelligence", 
-    "⛒ Bottlenecks & Health", 
-    "⚠️ Action Center"
-])
+if competition == "All":
+    # Hide deep-dive charts when combining completely different missions
+    tab_exec, tab_action = st.tabs([
+        "❖ Executive Overview", 
+        "⚠️ Action Center"
+    ])
+    tab_div = None
+    tab_ops = None
+else:
+    tab_exec, tab_div, tab_ops, tab_action = st.tabs([
+        "❖ Executive Overview", 
+        "🔬 Division Intelligence", 
+        "⛒ Bottlenecks & Health", 
+        "⚠️ Action Center"
+    ])
 
 # ==========================================
 # TAB 1: EXECUTIVE OVERVIEW
@@ -643,111 +652,110 @@ with tab_exec:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
-# TAB 2: DIVISION INTELLIGENCE
+# TAB 2: DIVISION INTELLIGENCE (Only for Mars/Luna)
 # ==========================================
-with tab_div:
-    st.markdown('<br>', unsafe_allow_html=True)
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.subheader("Performance Variance (Consistency)")
-    st.markdown('<div class="chart-desc">A tall box means highly inconsistent team performance. A short box means uniform performance. Outlier dots represent specific over/under-performers.</div>', unsafe_allow_html=True)
-    fig3 = px.box(current_df, x="division", y="performance_pct", color="division", color_discrete_map=COLOR_MAP, points="all")
-    fig3.update_yaxes(range=[0, 105], title="Individual Performance %")
-    fig3.update_xaxes(title="")
-    fig3.update_layout(showlegend=False, height=350)
-    st.plotly_chart(plotly_theme(fig3), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("### Metric Weakness by Division")
-    st.markdown('<div class="chart-desc" style="margin-left: 0;">Heatmaps explicitly styled to match each division\'s brand color. Darker/brighter blocks show which specific metric is currently excelling or dragging the team down.</div>', unsafe_allow_html=True)
-    
-    # Render all active divisions cleanly. If data is missing for one, show an elegant empty state.
-    cols = st.columns(len(selected_divs))
-    
-    if not current_df.empty:
-        heat_df = current_df.groupby("division")[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
-    else:
-        heat_df = pd.DataFrame()
-        
-    for idx, div_name in enumerate(selected_divs):
-        with cols[idx]:
-            st.markdown(f'<div class="panel" style="padding: 20px; text-align: center;">', unsafe_allow_html=True)
-            st.markdown(f"<h4 style='color: {COLOR_MAP.get(div_name, '#ffffff')}; margin-bottom: 10px;'>{div_name}</h4>", unsafe_allow_html=True)
-            
-            # Check if this division has data in the heatmap dataframe
-            if div_name in heat_df.index and not heat_df.loc[[div_name]].isna().all().all():
-                div_data = heat_df.loc[[div_name]].T
-                div_data.columns = ["Score"]
-                
-                div_color = COLOR_MAP.get(div_name, "#ffffff")
-                custom_scale = [[0.0, "rgba(0,0,0,0)"], [1.0, div_color]]
-                
-                fig_heat = px.imshow(
-                    div_data, 
-                    text_auto=".1f", 
-                    aspect="auto", 
-                    color_continuous_scale=custom_scale, 
-                    zmin=0, zmax=100
-                )
-                fig_heat.update_layout(
-                    coloraxis_showscale=False, 
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    height=300,
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)"
-                )
-                fig_heat.update_xaxes(visible=False)
-                st.plotly_chart(plotly_theme(fig_heat), use_container_width=True)
-            else:
-                # Elegant NO DATA placeholder
-                st.markdown("<div style='height: 300px; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.2); font-size: 14px; font-weight: bold; border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;'>NO DATA SUBMITTED YET</div>", unsafe_allow_html=True)
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# ==========================================
-# TAB 3: BOTTLENECKS & HEALTH
-# ==========================================
-with tab_ops:
-    st.markdown('<br>', unsafe_allow_html=True)
-    r3c1, r3c2 = st.columns([1, 1.2])
-    
-    with r3c1:
+if tab_div is not None:
+    with tab_div:
+        st.markdown('<br>', unsafe_allow_html=True)
         st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("Blockers vs. Performance Impact")
-        st.markdown('<div class="chart-desc">Analyzes if external blockers are the root cause of poor performance. Size of the dot equals communication score.</div>', unsafe_allow_html=True)
-        
-        scatter_df = current_df.copy()
-        scatter_df["blocked_jitter"] = scatter_df["blocked_tasks"] + np.random.uniform(-0.15, 0.15, size=len(scatter_df))
-        
-        fig4 = px.scatter(
-            scatter_df, x="blocked_jitter", y="performance_pct", color="division", 
-            size="communication_score", hover_data=["member_name", "blocked_tasks", "communication_score"],
-            color_discrete_map=COLOR_MAP
-        )
-        fig4.update_yaxes(range=[0, 105], title="Performance %")
-        fig4.update_xaxes(title="Count of Blocked Tasks (Slight jitter for visibility)", tickvals=[0,1,2,3,4,5])
-        fig4.update_layout(height=450)
-        st.plotly_chart(plotly_theme(fig4), use_container_width=True)
+        st.subheader("Performance Variance (Consistency)")
+        st.markdown('<div class="chart-desc">A tall box means highly inconsistent team performance. A short box means uniform performance. Outlier dots represent specific over/under-performers.</div>', unsafe_allow_html=True)
+        fig3 = px.box(current_df, x="division", y="performance_pct", color="division", color_discrete_map=COLOR_MAP, points="all")
+        fig3.update_yaxes(range=[0, 105], title="Individual Performance %")
+        fig3.update_xaxes(title="")
+        fig3.update_layout(showlegend=False, height=350)
+        st.plotly_chart(plotly_theme(fig3), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("### Metric Weakness by Division")
+        st.markdown('<div class="chart-desc" style="margin-left: 0;">Heatmaps explicitly styled to match each division\'s brand color. Darker/brighter blocks show which specific metric is currently excelling or dragging the team down.</div>', unsafe_allow_html=True)
         
-    with r3c2:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("Workforce Status Topology")
-        st.markdown('<div class="chart-desc">Hierarchical view: Divisions → Roles → Statuses. Click into a block to zoom. Colors represent status severity.</div>', unsafe_allow_html=True)
+        cols = st.columns(len(selected_divs))
         
         if not current_df.empty:
-            tree_df = current_df.copy()
-            status_map = {"Healthy": 1, "Watch": 2, "Critical": 3}
-            tree_df["status_num"] = tree_df["status"].map(status_map)
-            tree_df["count"] = 1
+            heat_df = current_df.groupby("division")[["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score"]].mean() * 20
+        else:
+            heat_df = pd.DataFrame()
             
-            fig6 = px.treemap(
-                tree_df, path=[px.Constant("Organization"), "division", "role", "status"], 
-                values="count", color="status_num", color_continuous_scale=["#22c55e", "#eab308", "#ef4444"],
-                hover_data=["member_name"]
+        for idx, div_name in enumerate(selected_divs):
+            with cols[idx]:
+                st.markdown(f'<div class="panel" style="padding: 20px; text-align: center;">', unsafe_allow_html=True)
+                st.markdown(f"<h4 style='color: {COLOR_MAP.get(div_name, '#ffffff')}; margin-bottom: 10px;'>{div_name}</h4>", unsafe_allow_html=True)
+                
+                if div_name in heat_df.index and not heat_df.loc[[div_name]].isna().all().all():
+                    div_data = heat_df.loc[[div_name]].T
+                    div_data.columns = ["Score"]
+                    
+                    div_color = COLOR_MAP.get(div_name, "#ffffff")
+                    custom_scale = [[0.0, "rgba(0,0,0,0)"], [1.0, div_color]]
+                    
+                    fig_heat = px.imshow(
+                        div_data, 
+                        text_auto=".1f", 
+                        aspect="auto", 
+                        color_continuous_scale=custom_scale, 
+                        zmin=0, zmax=100
+                    )
+                    fig_heat.update_layout(
+                        coloraxis_showscale=False, 
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        height=300,
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)"
+                    )
+                    fig_heat.update_xaxes(visible=False)
+                    st.plotly_chart(plotly_theme(fig_heat), use_container_width=True)
+                else:
+                    st.markdown("<div style='height: 300px; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.2); font-size: 14px; font-weight: bold; border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;'>NO DATA SUBMITTED YET</div>", unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+
+# ==========================================
+# TAB 3: BOTTLENECKS & HEALTH (Only for Mars/Luna)
+# ==========================================
+if tab_ops is not None:
+    with tab_ops:
+        st.markdown('<br>', unsafe_allow_html=True)
+        r3c1, r3c2 = st.columns([1, 1.2])
+        
+        with r3c1:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.subheader("Blockers vs. Performance Impact")
+            st.markdown('<div class="chart-desc">Analyzes if external blockers are the root cause of poor performance. Size of the dot equals communication score.</div>', unsafe_allow_html=True)
+            
+            scatter_df = current_df.copy()
+            scatter_df["blocked_jitter"] = scatter_df["blocked_tasks"] + np.random.uniform(-0.15, 0.15, size=len(scatter_df))
+            
+            fig4 = px.scatter(
+                scatter_df, x="blocked_jitter", y="performance_pct", color="division", 
+                size="communication_score", hover_data=["member_name", "blocked_tasks", "communication_score"],
+                color_discrete_map=COLOR_MAP
             )
-            fig6.update_layout(coloraxis_showscale=False, margin=dict(t=10, l=10, r=10, b=10), height=450)
-            st.plotly_chart(plotly_theme(fig6), use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+            fig4.update_yaxes(range=[0, 105], title="Performance %")
+            fig4.update_xaxes(title="Count of Blocked Tasks (Slight jitter for visibility)", tickvals=[0,1,2,3,4,5])
+            fig4.update_layout(height=450)
+            st.plotly_chart(plotly_theme(fig4), use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        with r3c2:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.subheader("Workforce Status Topology")
+            st.markdown('<div class="chart-desc">Hierarchical view: Divisions → Roles → Statuses. Click into a block to zoom. Colors represent status severity.</div>', unsafe_allow_html=True)
+            
+            if not current_df.empty:
+                tree_df = current_df.copy()
+                status_map = {"Healthy": 1, "Watch": 2, "Critical": 3}
+                tree_df["status_num"] = tree_df["status"].map(status_map)
+                tree_df["count"] = 1
+                
+                fig6 = px.treemap(
+                    tree_df, path=[px.Constant("Organization"), "division", "role", "status"], 
+                    values="count", color="status_num", color_continuous_scale=["#22c55e", "#eab308", "#ef4444"],
+                    hover_data=["member_name"]
+                )
+                fig6.update_layout(coloraxis_showscale=False, margin=dict(t=10, l=10, r=10, b=10), height=450)
+                st.plotly_chart(plotly_theme(fig6), use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
 # TAB 4: ACTION CENTER & MATRIX
