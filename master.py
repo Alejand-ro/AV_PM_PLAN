@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-import json
 
 import gspread
 import numpy as np
@@ -17,15 +17,9 @@ from av_common import (
     APP_NAME,
     DIVISION_COLORS,
     DIVISIONS,
-    INBOX_DIR,
-    OUTBOX_DIR,
-    REQUIRED_COLUMNS,
     annotate_attendance_streaks,
-    empty_dataframe,
     flags_to_text,
-    load_reports,
     metric_weights_text,
-    normalize_division,
     today_monday,
     week_label,
 )
@@ -35,7 +29,6 @@ st.set_page_config(page_title="AV Admin Command", page_icon="⚙️", layout="wi
 COLOR_MAP = DIVISION_COLORS
 STATUS_COLORS = {"Healthy": "#22c55e", "Watch": "#eab308", "Critical": "#ef4444"}
 
-
 # --- GOOGLE SHEETS CONFIGURATION ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -44,6 +37,7 @@ SCOPES = [
 
 SHEET_COLUMNS = [
     "timestamp",
+    "competition", # ADDED FOR MARS/LUNA
     "week_start",
     "division",
     "pm_name",
@@ -77,13 +71,18 @@ SHEET_COLUMNS = [
     "flags",
 ]
 
-
-def google_sheet_label() -> str:
-    return st.secrets.get("SHEET_NAME", "AV PM Reports Database")
-
+def google_sheet_ready() -> tuple[bool, str]:
+    missing = []
+    if "gcp_service_account" not in st.secrets:
+        missing.append("[gcp_service_account]")
+    if not st.secrets.get("SHEET_NAME") and not st.secrets.get("SHEET_ID"):
+        missing.append("SHEET_NAME or SHEET_ID")
+    if missing:
+        return False, "Missing Streamlit secrets: " + ", ".join(missing)
+    return True, "Google Sheets connection is configured."
 
 @st.cache_resource(show_spinner=False)
-def get_worksheet():
+def get_spreadsheet():
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Missing [gcp_service_account] in Streamlit Secrets.")
 
@@ -93,174 +92,169 @@ def get_worksheet():
 
     sheet_id = st.secrets.get("SHEET_ID", "").strip() if st.secrets.get("SHEET_ID") else ""
     sheet_name = st.secrets.get("SHEET_NAME", "AV PM Reports Database")
-    worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
+    return client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
 
-    spreadsheet = client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
+@st.cache_data(ttl=600, show_spinner=False)
+def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token=0) -> pd.DataFrame:
     try:
-        worksheet = spreadsheet.worksheet(worksheet_name)
+        worksheet = _client.worksheet(worksheet_name)
+        records = worksheet.get_all_records()
+        if not records:
+            return pd.DataFrame(columns=SHEET_COLUMNS)
+        
+        df = pd.DataFrame(records)
+        
+        # Backward compatibility for old rows without a competition
+        if "competition" not in df.columns:
+            df["competition"] = "Mars"
+        else:
+            df["competition"] = df["competition"].replace(r'^\s*$', "Mars", regex=True).fillna("Mars")
+            
+        # Ensure communication score exists for bubble sizes
+        if "communication_score" not in df.columns:
+            df["communication_score"] = 3.0
+        else:
+            df["communication_score"] = pd.to_numeric(df["communication_score"], errors='coerce').fillna(3.0)
+            
+        # Clean numeric fields
+        numeric_cols = ["performance_pct", "blocked_tasks", "tasks_completed", "avg_quality_1_to_5"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                
+        return df
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(SHEET_COLUMNS) + 5)
-    ensure_sheet_headers(worksheet)
-    return worksheet
-
-
-def ensure_sheet_headers(worksheet) -> list[str]:
-    existing = worksheet.row_values(1)
-    existing = [str(h).strip() for h in existing if str(h).strip()]
-    headers = list(existing)
-    for col in SHEET_COLUMNS:
-        if col not in headers:
-            headers.append(col)
-    if headers != existing:
-        worksheet.update("1:1", [headers])
-    return headers
-
-
-def parse_flags(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return value
-    if value is None or value == "":
-        return []
-    if isinstance(value, float) and pd.isna(value):
-        return []
-    text = str(value).strip()
-    if not text:
-        return []
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return [str(x) for x in parsed]
-    except Exception:
-        pass
-    return [x.strip() for x in text.split(",") if x.strip()]
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def load_reports_from_google_sheets() -> tuple[pd.DataFrame, list[str]]:
-    warnings: list[str] = []
-    try:
-        worksheet = get_worksheet()
-        rows = worksheet.get_all_records()
-    except Exception as exc:
-        return empty_dataframe(), [f"Google Sheets connection failed: {exc}"]
-
-    if not rows:
-        return empty_dataframe(), warnings
-
-    df = pd.DataFrame(rows)
-    for column in REQUIRED_COLUMNS:
-        if column not in df.columns:
-            df[column] = "" if column in {"record_id", "report_id", "created_at", "pm_name", "division", "week_start", "member_name", "role", "notes", "status", "source_file"} else 0
-
-    if "communication_score" not in df.columns:
-        df["communication_score"] = 3.0
-    if "hours_invested" not in df.columns:
-        df["hours_invested"] = 0
-    if "source_file" not in df.columns:
-        df["source_file"] = "Google Sheets"
-
-    df["flags"] = df["flags"].apply(parse_flags)
-
-    text_cols = ["record_id", "report_id", "created_at", "pm_name", "division", "week_start", "member_name", "role", "notes", "status", "source_file"]
-    for col in text_cols:
-        df[col] = df[col].fillna("").astype(str)
-    df["division"] = df["division"].apply(normalize_division)
-
-    for col in [
-        "iso_year", "iso_week", "tasks_assigned", "tasks_completed", "tasks_on_time", "tasks_late",
-        "blocked_tasks", "meetings_required", "meetings_attended",
-    ]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-
-    for col in [
-        "avg_quality_1_to_5", "pm_confidence_1_to_5", "completion_score", "quality_score",
-        "delivery_score", "attendance_score", "confidence_score", "performance_score", "performance_pct",
-        "communication_score", "hours_invested",
-    ]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
-
-    for col in ["completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score", "performance_score"]:
-        df[col] = df[col].clip(lower=0.0, upper=1.0)
-    df["performance_pct"] = df["performance_pct"].clip(lower=0.0, upper=100.0)
-    df["communication_score"] = df["communication_score"].replace(0, 3.0).clip(lower=1.0, upper=5.0)
-
-    df["week_start_dt"] = pd.to_datetime(df["week_start"], errors="coerce")
-    df = df.drop_duplicates(subset=["record_id"], keep="last")
-
-    # Keep the columns the dashboard expects, plus extra operational fields if present.
-    ordered = REQUIRED_COLUMNS + ["week_start_dt"]
-    for extra in ["communication_score", "hours_invested"]:
-        if extra not in ordered and extra in df.columns:
-            ordered.append(extra)
-    return df[ordered], warnings
+        return pd.DataFrame(columns=SHEET_COLUMNS)
+    except Exception as e:
+        st.error(f"Error loading data from Google Sheets: {e}")
+        return pd.DataFrame(columns=SHEET_COLUMNS)
 
 # -----------------------------------------------------------------------------
-# Visual system: Slate/Black Gradients, Muted Accents, High Spacing
+# COMPETITION STATE INITIALIZATION
 # -----------------------------------------------------------------------------
+if "competition" not in st.session_state:
+    st.session_state.competition = "All"
+
+# -----------------------------------------------------------------------------
+# DYNAMIC THEME ENGINE
+# -----------------------------------------------------------------------------
+competition = st.session_state.competition
+
+if competition == "Mars":
+    bg_top = "#1e293b"
+    bg_bot = "#000000"
+    side_top = "#1e293b"
+    side_bot = "#111827"
+    panel_bg = "rgba(30, 41, 59, 0.45)"
+    panel_light = "rgba(51, 65, 85, 0.35)"
+    primary = "#ef4444"
+    primary_hover = "#dc2626"
+    primary_text = "#ffffff"
+    primary_shadow = "rgba(239, 68, 68, 0.25)"
+    logo_a_color = "#ef4444"
+    logo_a_shadow = "#7f1d1d"
+    mode_text = "Mars Mission Command"
+elif competition == "Luna":
+    bg_top = "#334155"      
+    bg_bot = "#0f172a"      
+    side_top = "#334155"
+    side_bot = "#1e293b"
+    panel_bg = "rgba(71, 85, 105, 0.40)"    
+    panel_light = "rgba(100, 116, 139, 0.30)"
+    primary = "#f8fafc"     
+    primary_hover = "#e2e8f0"
+    primary_text = "#1e3a8a" 
+    primary_shadow = "rgba(255, 255, 255, 0.20)"
+    logo_a_color = "#f8fafc"
+    logo_a_shadow = "#64748b"
+    mode_text = "Luna Mission Command"
+else:
+    # All Missions (Neutral/Blue Theme)
+    bg_top = "#1e293b"
+    bg_bot = "#000000"
+    side_top = "#1e293b"
+    side_bot = "#111827"
+    panel_bg = "rgba(30, 41, 59, 0.45)"
+    panel_light = "rgba(51, 65, 85, 0.35)"
+    primary = "#3b82f6" 
+    primary_hover = "#2563eb"
+    primary_text = "#ffffff"
+    primary_shadow = "rgba(59, 130, 246, 0.25)"
+    logo_a_color = "#60a5fa"
+    logo_a_shadow = "#1e3a8a"
+    mode_text = "All Missions Command"
+
 st.markdown(
-    """
+    f"""
 <style>
-    :root {
-        --panel: rgba(30, 41, 59, 0.45); 
-        --panel-light: rgba(51, 65, 85, 0.35); 
+    :root {{
+        --bg-top: {bg_top};
+        --bg-bot: {bg_bot};
+        --side-top: {side_top};
+        --side-bot: {side_bot};
+        --panel: {panel_bg};
+        --panel-light: {panel_light};
+        --primary: {primary};
+        --primary-hover: {primary_hover};
+        --primary-text: {primary_text};
+        --primary-shadow: {primary_shadow};
+        --logo-a-color: {logo_a_color};
+        --logo-a-shadow: {logo_a_shadow};
+        
         --ink: #f8fafc;
-        --line: rgba(255, 255, 255, 0.12);
+        --line: rgba(255, 255, 255, 0.15);
         --shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-        --blue: #2563eb;
-        --red: #ef4444;
-    }
+    }}
     
-    [data-testid="stAppViewContainer"] {
-        background: radial-gradient(circle at top, #1e293b 0%, #000000 100%);
+    /* ANIMATIONS: Add smooth fade to all major structural elements */
+    [data-testid="stAppViewContainer"],
+    [data-testid="stSidebar"],
+    .hero, .glass, button, button *, .av-logo .a, div[data-baseweb="tab-highlight"], 
+    .stButton > button, [data-testid="stFormSubmitButton"] > button {{
+        transition: all 0.7s ease-in-out !important;
+    }}
+    
+    [data-testid="stAppViewContainer"] {{
+        background: radial-gradient(circle at top, var(--bg-top) 0%, var(--bg-bot) 100%);
         background-attachment: fixed;
         color: var(--ink);
-    }
+    }}
     
-    [data-testid="stHeader"] { background: rgba(0,0,0,0); }
+    [data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
     
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, rgba(30,41,59,0.65) 0%, rgba(17,24,39,0.85) 100%);
+    [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, var(--side-top) 0%, var(--side-bot) 100%);
         border-right: 1px solid var(--line);
         backdrop-filter: blur(28px);
         -webkit-backdrop-filter: blur(28px);
-    }
+    }}
     
-    /* Wider container and more padding */
-    .block-container { max-width: 1560px; padding-top: 2.5rem; padding-bottom: 4rem; }
+    .block-container {{ max-width: 1560px; padding-top: 2.5rem; padding-bottom: 4rem; }}
     
-    .hero {
+    .hero {{
         position:relative;
         overflow:hidden;
         border-radius: 24px;
         padding: 48px 52px; 
-        margin-bottom: 36px; 
+        margin-bottom: 24px; 
         background: var(--panel);
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
         border: 1px solid var(--line);
         box-shadow: var(--shadow);
         color: var(--ink);
-    }
+    }}
     
-    .av-logo-container { display:flex; align-items:center; gap:20px; margin-bottom: 10px;}
+    .av-logo-container {{ display:flex; align-items:center; gap:20px; margin-bottom: 10px;}}
+    .av-logo {{ font-family: 'Arial Black', sans-serif; font-size: 72px; letter-spacing: -14px; font-style: italic; line-height: 1; user-select: none; }}
+    .av-logo .a {{ color: var(--logo-a-color); text-shadow: 3px 3px 0px var(--logo-a-shadow); }}
+    .av-logo .v {{ color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }}
     
-    /* 3D Logo Restored */
-    .av-logo { 
-        font-family: 'Arial Black', sans-serif; 
-        font-size: 72px; 
-        letter-spacing: -14px; 
-        font-style: italic; 
-        line-height: 1; 
-        user-select: none; 
-    }
-    .av-logo .a { color: #ef4444; text-shadow: 3px 3px 0px #7f1d1d; }
-    .av-logo .v { color: #3b82f6; text-shadow: 3px 3px 0px #1e3a8a; mix-blend-mode: screen; }
+    .hero-content {{ position:relative; z-index:2; max-width: 1040px; }}
+    .eyebrow {{ color:#bfdbfe; font-size:13px; letter-spacing:.18em; text-transform:uppercase; font-weight:900; }}
     
-    .hero-content { position:relative; z-index:2; max-width: 1040px; }
-    .eyebrow { color:#bfdbfe; font-size:13px; letter-spacing:.18em; text-transform:uppercase; font-weight:900; }
-    
-    .title { 
-        font-size: clamp(42px, 5.5vw, 84px); /* Massively increased size */
+    .title {{ 
+        font-size: clamp(42px, 5.5vw, 84px); 
         line-height:.90; 
         letter-spacing:-.04em; 
         font-weight:950; 
@@ -270,28 +264,28 @@ st.markdown(
         align-items: center;
         gap: 20px;
         flex-wrap: wrap;
-    }
+    }}
     
-    .admin-title {
-        background: rgba(255, 255, 255, 0.30); /* Much lighter/brighter */
+    .admin-title {{
+        background: rgba(255, 255, 255, 0.25); 
         backdrop-filter: blur(24px); 
         -webkit-backdrop-filter: blur(24px);
         color: #ffffff;
-        padding: 10px 24px; /* Bolder padding */
+        padding: 10px 24px; 
         border-radius: 999px; 
-        font-size: 0.38em; /* Balanced against the new huge title text */
+        font-size: 0.38em; 
         font-weight: 900;
         letter-spacing: 0.15em;
-        border: 1px solid rgba(255, 255, 255, 0.60); /* Brighter rim */
-        box-shadow: 0 8px 24px rgba(0,0,0,0.30), inset 0 2px 4px rgba(255,255,255,0.40); /* Pronounced inner & outer glow */
+        border: 1px solid rgba(255, 255, 255, 0.50); 
+        box-shadow: 0 8px 24px rgba(0,0,0,0.30), inset 0 2px 4px rgba(255,255,255,0.30); 
         text-transform: uppercase;
         display: inline-block;
         transform: translateY(-4px); 
-    }
+    }}
 
-    .subtitle { color:#cbd5e1; font-size:18px; line-height:1.58; max-width:940px; margin-top: 15px;}
+    .subtitle {{ color:#cbd5e1; font-size:18px; line-height:1.58; max-width:940px; margin-top: 15px;}}
     
-    .panel {
+    .panel {{
         background: var(--panel);
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
@@ -301,9 +295,9 @@ st.markdown(
         padding: 32px 36px; 
         border-radius: 16px; 
         margin-bottom: 32px; 
-    }
+    }}
     
-    .kpi { 
+    .kpi {{ 
         padding: 28px; 
         border-radius: 16px; 
         min-height: 160px; 
@@ -315,41 +309,75 @@ st.markdown(
         border: 1px solid var(--line); 
         box-shadow: 0 8px 20px rgba(0,0,0,.20);
         margin-bottom: 24px;
-    }
+    }}
     
-    .kpi:before { content:""; position:absolute; width:170px; height:160px; right:-58px; top:-62px; background: var(--glow); border-radius:999px; filter: blur(25px); opacity:.08; }
+    .kpi:before {{ content:""; position:absolute; width:170px; height:160px; right:-58px; top:-62px; background: var(--glow); border-radius:999px; filter: blur(25px); opacity:.08; }}
     
-    .kpi-label { color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; position:relative; z-index:2; }
-    .kpi-value { color:#ffffff; font-size:48px; font-weight:950; letter-spacing:-.06em; margin-top:8px; position:relative; z-index:2; }
-    .kpi-sub { color:#cbd5e1; font-size:14px; margin-top:6px; position:relative; z-index:2; }
+    .kpi-label {{ color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; position:relative; z-index:2; }}
+    .kpi-value {{ color:#ffffff; font-size:48px; font-weight:950; letter-spacing:-.06em; margin-top:8px; position:relative; z-index:2; }}
+    .kpi-sub {{ color:#cbd5e1; font-size:14px; margin-top:6px; position:relative; z-index:2; }}
+    
+    /* Segmented Control Styling */
+    div.row-widget.stRadio > div {{
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: rgba(255,255,255,0.05);
+        padding: 8px 16px;
+        border-radius: 100px;
+        border: 1px solid var(--line);
+        width: fit-content;
+        margin: 0 auto;
+    }}
     
     /* Tabs Styling Sync */
-    button[data-baseweb="tab"] {
-        color: #94a3b8 !important;
+    button[data-baseweb="tab"] {{
+        color: #cbd5e1 !important;
         font-weight: 700 !important;
         font-size: 16px !important;
         padding: 10px 20px !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: #f8fafc !important;
-    }
-    div[data-baseweb="tab-highlight"] {
-        background-color: var(--red) !important;
-        height: 3px !important;
-    }
-
-    .stDownloadButton > button {
-        background: var(--red) !important; 
+    }}
+    button[data-baseweb="tab"][aria-selected="true"] {{
         color: #ffffff !important;
+    }}
+    div[data-baseweb="tab-highlight"] {{
+        background-color: var(--primary) !important;
+        height: 3px !important;
+    }}
+
+    /* Standard Buttons */
+    .stButton > button {{
+        background: rgba(255,255,255,0.1) !important; 
+        color: #ffffff !important;
+        border: 1px solid rgba(255,255,255,0.2) !important;
+        border-radius: 12px !important;
+        font-weight: 800 !important;
+    }}
+    .stButton > button * {{ color: #ffffff !important; }}
+    
+    /* Primary Accent Buttons */
+    button[kind="primary"], [data-testid="stFormSubmitButton"] > button, .stDownloadButton > button {{
+        background: var(--primary) !important;
+        color: var(--primary-text) !important;
+        box-shadow: 0 8px 20px var(--primary-shadow) !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 12px !important;
         font-weight: 800 !important;
-        box-shadow: 0 8px 20px rgba(239, 68, 68, 0.25) !important;
-    }
-    .stDownloadButton > button:hover { background: #dc2626 !important; transform: translateY(-1px); }
+    }}
     
-    h1, h2, h3, p, li { color: var(--ink) !important; }
-    .chart-desc { font-size: 14px; color: #94a3b8; margin-top: -10px; margin-bottom: 20px; border-left: 3px solid var(--blue); padding-left: 12px;}
+    button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button *, .stDownloadButton > button * {{
+        color: var(--primary-text) !important;
+    }}
+    
+    button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover, .stDownloadButton > button:hover {{ 
+        background: var(--primary-hover) !important; 
+        transform: translateY(-1px); 
+    }}
+    
+    h1, h2, h3, p, li {{ color: var(--ink) !important; }}
+    .chart-desc {{ font-size: 14px; color: #94a3b8; margin-top: -10px; margin-bottom: 20px; border-left: 3px solid var(--blue); padding-left: 12px;}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -388,14 +416,14 @@ def metric_delta_text(current: float | None, previous: float | None) -> str:
 # Admin Header
 # -----------------------------------------------------------------------------
 st.markdown(
-    """
+    f"""
 <div class="hero">
   <div class="hero-content">
     <div class="av-logo-container">
         <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
         <div class="eyebrow" style="margin-top: 15px;">Executive Level Operations</div>
     </div>
-    <div class="title">Performance <span class="admin-title">Admin Command</span></div>
+    <div class="title">Performance <span class="admin-title">{mode_text}</span></div>
     <div class="subtitle">
       Comprehensive analytical breakdown of division trends, execution bottlenecks, communication gaps, and workforce health. 
     </div>
@@ -405,57 +433,81 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Load Google Sheets data initially to get unique divisions for the sidebar
-raw_df, warnings = load_reports_from_google_sheets()
-df = annotate_attendance_streaks(raw_df)
+# -----------------------------------------------------------------------------
+# GLOBAL MISSION TOGGLE
+# -----------------------------------------------------------------------------
+st.markdown('<div style="display: flex; justify-content: center; margin-bottom: 32px;">', unsafe_allow_html=True)
+comp_choice = st.radio(
+    "Mission Toggle",
+    options=["All Missions", "Mars Mission", "Luna Mission"],
+    index=0 if competition == "All" else (1 if competition == "Mars" else 2),
+    horizontal=True,
+    label_visibility="collapsed",
+    key="comp_radio_selector"
+)
+st.markdown('</div>', unsafe_allow_html=True)
 
-if "communication_score" not in df.columns:
-    df["communication_score"] = 3.0
-else:
-    df["communication_score"] = df["communication_score"].fillna(3.0)
+# Update state if changed
+new_comp = "All" if comp_choice == "All Missions" else ("Mars" if comp_choice == "Mars Mission" else "Luna")
+if new_comp != st.session_state.competition:
+    st.session_state.competition = new_comp
+    st.rerun()
 
-available_divisions = sorted([d for d in df["division"].unique() if pd.notna(d)]) if "division" in df.columns else []
+# -----------------------------------------------------------------------------
+# DATA LOADING & SIDEBAR
+# -----------------------------------------------------------------------------
+sheet_ok, sheet_msg = google_sheet_ready()
+
+if "force_refresh" not in st.session_state:
+    st.session_state.force_refresh = 0
 
 with st.sidebar:
-    st.header("⚙️ Data Configuration")
-    st.caption("Source: Google Sheets")
-    st.code(google_sheet_label(), language="text")
-    if st.button("↻ Refresh Google Sheets data", use_container_width=True):
+    st.header("⚙️ Data Sync")
+    if st.button("↻ Force Refresh Google Sheets", use_container_width=True):
+        st.session_state.force_refresh += 1
         st.cache_data.clear()
-        st.rerun()
+    if sheet_ok:
+        st.caption(f"Status: {sheet_msg}")
+    else:
+        st.error(sheet_msg)
+        st.stop()
 
-    if warnings:
-        st.warning("\n".join(warnings))
+# Load base data
+client = get_spreadsheet()
+worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
+raw_df = load_reports_from_google_sheets(client, worksheet_name, force_refresh_token=st.session_state.force_refresh)
+df = annotate_attendance_streaks(raw_df)
 
+if df.empty:
+    st.warning("No data found in the reports worksheet.")
+    st.stop()
+
+# 1) Apply Competition Filter globally
+if competition != "All":
+    df = df[df["competition"] == competition]
+
+if df.empty:
+    st.warning(f"No records match the active {competition} Mission filter.")
+    st.stop()
+
+# Generate valid filter options based on the resulting dataframe
+available_weeks = sorted([w for w in df["week_start"].dropna().unique().tolist() if w])
+available_divisions = sorted([d for d in df["division"].unique() if pd.notna(d)])
+
+with st.sidebar:
     st.divider()
-
     st.header("⌖ Division Toggle")
     st.caption("Isolate specific teams in the analytics")
     selected_divs = st.multiselect("Active Divisions", options=available_divisions, default=available_divisions)
 
-    st.divider()
-    st.caption("Algorithm Weights")
-    for name, weight in {"completion": .30, "quality": .25, "delivery": .20, "attendance": .15, "confidence": .10}.items():
-        st.write(f"**{name.title()}**: {int(weight * 100)}%")
-
-if df.empty:
-    if warnings:
-        st.error(warnings[0])
-    else:
-        st.warning("No Google Sheets data found yet. Submit one PM report first, then refresh this dashboard.")
-    st.stop()
-
 # -----------------------------------------------------------------------------
-# Global Filters & KPIs
+# Global Timeline Filters & KPIs
 # -----------------------------------------------------------------------------
-all_weeks = sorted([w for w in df["week_start"].dropna().unique().tolist() if w])
-
-# Removed the panel div around the multiselect to give it breathing room
-st.markdown('<div style="margin-bottom: 24px; max-width: 800px;">', unsafe_allow_html=True)
-selected_weeks = st.multiselect("Timeline Filter (Affects entire dashboard)", options=all_weeks, default=all_weeks[-6:] if len(all_weeks) > 6 else all_weeks, format_func=week_label)
+st.markdown('<div class="panel" style="padding: 15px 36px; margin-bottom: 24px;">', unsafe_allow_html=True)
+selected_weeks = st.multiselect("Timeline Filter (Affects entire dashboard)", options=available_weeks, default=available_weeks[-6:] if len(available_weeks) > 6 else available_weeks, format_func=week_label)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Apply filters
+# 2) Apply Final Filters
 filtered = df[
     (df["week_start"].isin(selected_weeks) if selected_weeks else True) &
     (df["division"].isin(selected_divs) if selected_divs else True)
@@ -477,12 +529,12 @@ blockers = int(current_df["blocked_tasks"].sum()) if not current_df.empty else 0
 attendance_flags = int((current_df["attendance_risk_streak"] >= 2).sum()) if not current_df.empty else 0
 
 k1, k2, k3, k4 = st.columns(4)
-with k1: st.markdown(kpi_card("Current Filter Average", f"{org_avg:.1f}%" if org_avg is not None else "—", metric_delta_text(org_avg, prev_avg), "#2563eb"), unsafe_allow_html=True)
+with k1: st.markdown(kpi_card("Current Filter Average", f"{org_avg:.1f}%" if org_avg is not None else "—", metric_delta_text(org_avg, prev_avg), primary), unsafe_allow_html=True)
 with k2: st.markdown(kpi_card("At-Risk Members", str(risk_count), "Watch + Critical statuses", "#ef4444"), unsafe_allow_html=True)
 with k3: st.markdown(kpi_card("Active Blockers", str(blockers), "Total tasks currently blocked", "#ffffff"), unsafe_allow_html=True)
 with k4: st.markdown(kpi_card("Attendance Risks", str(attendance_flags), "Consecutive absence streaks", "#3b82f6"), unsafe_allow_html=True)
 
-st.markdown('<br>', unsafe_allow_html=True) # Extra breathing room before tabs
+st.markdown('<br>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # TABBED DASHBOARD LAYOUT
@@ -498,12 +550,12 @@ tab_exec, tab_div, tab_ops, tab_action = st.tabs([
 # TAB 1: EXECUTIVE OVERVIEW
 # ==========================================
 with tab_exec:
-    st.markdown('<br>', unsafe_allow_html=True) # Space inside tab
+    st.markdown('<br>', unsafe_allow_html=True)
     r1c1, r1c2 = st.columns([1.5, 1])
     
     with r1c1:
         st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("Historical Trajectory")
+        st.subheader("Historical Trajectory by Division")
         st.markdown('<div class="chart-desc">Tracks overall performance percentage of filtered divisions over time.</div>', unsafe_allow_html=True)
         weekly_div = filtered.groupby(["week_start", "division"], as_index=False)["performance_pct"].mean()
         fig1 = px.line(weekly_div, x="week_start", y="performance_pct", color="division", markers=True, color_discrete_map=COLOR_MAP)
@@ -524,10 +576,14 @@ with tab_exec:
             org_means_list.append(org_means_list[0])
             categories_loop = categories + [categories[0]]
             
+            # Use dynamic primary color for radar chart
+            radar_fill = primary_shadow if competition == "All" else primary_shadow
+            radar_line = primary
+            
             fig5 = go.Figure()
             fig5.add_trace(go.Scatterpolar(
                 r=org_means_list, theta=categories_loop, fill='toself',
-                fillcolor='rgba(37, 99, 235, 0.4)', line=dict(color='#3b82f6', width=2), name='Filter Average'
+                fillcolor=radar_fill, line=dict(color=radar_line, width=2), name='Filter Average'
             ))
             fig5.update_layout(
                 polar=dict(radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(255,255,255,0.1)")),
@@ -535,6 +591,21 @@ with tab_exec:
                 margin=dict(t=20, b=20, l=20, r=20)
             )
             st.plotly_chart(fig5, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    # If viewing "All Missions", add a comparative summary chart
+    if competition == "All":
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.subheader("Mission Performance Comparison")
+        st.markdown('<div class="chart-desc">Direct comparison of operational health across active competition programs.</div>', unsafe_allow_html=True)
+        comp_summary = filtered.groupby(["week_start", "competition"], as_index=False)["performance_pct"].mean()
+        comp_colors = {"Mars": "#ef4444", "Luna": "#f8fafc"}
+        fig_comp = px.bar(comp_summary, x="week_start", y="performance_pct", color="competition", barmode="group", color_discrete_map=comp_colors)
+        fig_comp.update_yaxes(range=[0, 100], title="Avg Performance %")
+        fig_comp.update_xaxes(title="Week")
+        # Ensure Luna (white) bars are visible against white text
+        fig_comp.update_traces(marker_line_color='rgba(255,255,255,0.2)', marker_line_width=1.5)
+        st.plotly_chart(plotly_theme(fig_comp), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
@@ -659,7 +730,7 @@ with tab_action:
         
         st.dataframe(
             risk_df[[
-                "division", "member_name", "role", "performance_pct", "status", "blocked_tasks",
+                "competition", "division", "member_name", "role", "performance_pct", "status", "blocked_tasks",
                 "attendance_risk_streak", "communication_score", "flags_text", "notes"
             ]],
             use_container_width=True, hide_index=True,
@@ -668,11 +739,15 @@ with tab_action:
 
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.subheader("▦ Complete Data Matrix")
-    st.markdown('<div class="chart-desc">The unfiltered, raw JSON outputs flattened into a tabular matrix for external export or auditing.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="chart-desc">The unfiltered, raw Google Sheets data flattened into a tabular matrix for external export or auditing.</div>', unsafe_allow_html=True)
 
     raw_view = filtered.copy()
     raw_view["flags"] = raw_view["flags"].apply(flags_to_text)
-    raw_view = raw_view.sort_values(["week_start", "division", "member_name"], ascending=[False, True, True])
+    
+    if competition == "All":
+        raw_view = raw_view.sort_values(["week_start", "competition", "division", "member_name"], ascending=[False, True, True, True])
+    else:
+        raw_view = raw_view.sort_values(["competition", "week_start", "division", "member_name"], ascending=[True, False, True, True])
 
     st.dataframe(raw_view, use_container_width=True, hide_index=True)
 
@@ -682,5 +757,6 @@ with tab_action:
         file_name=f"av_admin_export_{date.today().isoformat()}.csv",
         mime="text/csv",
         use_container_width=True,
+        type="primary"
     )
     st.markdown('</div>', unsafe_allow_html=True)
