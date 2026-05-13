@@ -353,14 +353,14 @@ if competition == "Mars":
     logo_a_shadow = "#7f1d1d"
 else:
     # Lighter Dark & White/Silver
-    bg_top = "#334155"      # Lighter twilight slate
-    bg_bot = "#0f172a"      # Deep navy/black
+    bg_top = "#334155"      
+    bg_bot = "#0f172a"      
     side_top = "#334155"
     side_bot = "#1e293b"
-    panel_bg = "#475569"    # Lighter silvery slate panels
-    primary = "#f8fafc"     # White/Silver accent
+    panel_bg = "#475569"    
+    primary = "#f8fafc"     
     primary_hover = "#e2e8f0"
-    primary_text = "#0f172a" # Dark text on white buttons
+    primary_text = "#1e3a8a" # Deep dark blue from the 'V' shadow
     primary_shadow = "rgba(255, 255, 255, 0.20)"
     logo_a_color = "#f8fafc"
     logo_a_shadow = "#64748b"
@@ -389,7 +389,7 @@ st.markdown(
     /* ANIMATIONS: Add smooth fade to all major structural elements */
     [data-testid="stAppViewContainer"],
     [data-testid="stSidebar"],
-    .hero, .glass, button, .av-logo .a, div[data-baseweb="tab-highlight"], 
+    .hero, .glass, button, button *, .av-logo .a, div[data-baseweb="tab-highlight"], 
     .stButton > button, [data-testid="stFormSubmitButton"] > button {{
         transition: all 0.7s ease-in-out !important;
     }}
@@ -501,6 +501,7 @@ st.markdown(
         border-radius: 12px !important;
         font-weight: 800 !important;
     }}
+    .stButton > button * {{ color: #ffffff !important; }}
     
     /* Primary Accent Buttons (Dynamic Red or White) */
     button[kind="primary"], [data-testid="stFormSubmitButton"] > button, .stDownloadButton > button {{
@@ -511,6 +512,12 @@ st.markdown(
         border-radius: 12px !important;
         font-weight: 800 !important;
     }}
+    
+    /* Force inner Streamlit text tags to inherit dynamic color */
+    button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button *, .stDownloadButton > button * {{
+        color: var(--primary-text) !important;
+    }}
+    
     button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover, .stDownloadButton > button:hover {{ 
         background: var(--primary-hover) !important; 
         transform: translateY(-1px); 
