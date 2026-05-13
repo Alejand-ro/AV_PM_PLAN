@@ -37,13 +37,14 @@ DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
 def safe_key_part(value) -> str:
     return str(value or "").strip().lower()
 
-def get_draft_path(pm, div, date_val):
+def get_draft_path(competition, pm, div, date_val):
+    safe_comp = safe_key_part(competition)
     safe_pm = safe_key_part(pm).replace(" ", "_") or "blank_pm"
     safe_div = safe_key_part(div).replace(" ", "_") or "blank_division"
-    return DRAFTS_DIR / f"draft_{date_val}_{safe_div}_{safe_pm}.json"
+    return DRAFTS_DIR / f"draft_{safe_comp}_{date_val}_{safe_div}_{safe_pm}.json"
 
-def cloud_draft_key(pm_name: str, division: str, week_start) -> str:
-    return "|".join([str(week_start), safe_key_part(division), safe_key_part(pm_name)])
+def cloud_draft_key(competition: str, pm_name: str, division: str, week_start) -> str:
+    return "|".join([safe_key_part(competition), str(week_start), safe_key_part(division), safe_key_part(pm_name)])
 
 def monday_for(any_date):
     return any_date - timedelta(days=any_date.weekday())
@@ -71,6 +72,7 @@ SCOPES = [
 
 SHEET_COLUMNS = [
     "timestamp",
+    "competition", # ADDED FOR MARS/LUNA
     "week_start",
     "division",
     "pm_name",
@@ -106,6 +108,7 @@ SHEET_COLUMNS = [
 
 DRAFT_COLUMNS = [
     "draft_key",
+    "competition", # ADDED FOR MARS/LUNA
     "week_start",
     "week_end",
     "division",
@@ -189,15 +192,23 @@ def normalize_tracker_df(records: list[dict], template_df: pd.DataFrame) -> pd.D
     for col in template_df.columns:
         if col not in df.columns:
             df[col] = 0 if col not in ["member_name", "role", "notes"] else ""
+            
+    # Ensure there are 50 rows, padding with empty if needed
+    if len(df) < 50:
+        missing_rows = 50 - len(df)
+        pad_data = {c: ("" if c in ["member_name", "role", "notes"] else 0) for c in template_df.columns}
+        padding = pd.DataFrame([pad_data for _ in range(missing_rows)])
+        df = pd.concat([df, padding], ignore_index=True)
+        
     return df.reindex(columns=template_df.columns).fillna("")
 
 
-def load_cloud_draft(pm_name: str, division: str, week_start) -> list[dict] | None:
+def load_cloud_draft(competition: str, pm_name: str, division: str, week_start) -> list[dict] | None:
     if not pm_name.strip():
         return None
     worksheet = get_draft_worksheet()
     rows = worksheet.get_all_records()
-    key = cloud_draft_key(pm_name, division, week_start)
+    key = cloud_draft_key(competition, pm_name, division, week_start)
     for row in rows:
         if str(row.get("draft_key", "")).strip() == key:
             raw_json = row.get("draft_json", "")
@@ -207,11 +218,11 @@ def load_cloud_draft(pm_name: str, division: str, week_start) -> list[dict] | No
     return None
 
 
-def delete_cloud_draft(pm_name: str, division: str, week_start) -> int:
+def delete_cloud_draft(competition: str, pm_name: str, division: str, week_start) -> int:
     if not pm_name.strip():
         return 0
     worksheet = get_draft_worksheet()
-    key = cloud_draft_key(pm_name, division, week_start)
+    key = cloud_draft_key(competition, pm_name, division, week_start)
     rows = worksheet.get_all_records()
     to_delete = []
     for offset, row in enumerate(rows, start=2):
@@ -222,15 +233,16 @@ def delete_cloud_draft(pm_name: str, division: str, week_start) -> int:
     return len(to_delete)
 
 
-def save_cloud_draft(pm_name: str, division: str, week_start, rows: list[dict]) -> tuple[bool, str]:
+def save_cloud_draft(competition: str, pm_name: str, division: str, week_start, rows: list[dict]) -> tuple[bool, str]:
     if not pm_name.strip():
         return False, "Please enter your PM name before saving a cloud draft."
     worksheet = get_draft_worksheet()
     headers = ensure_draft_headers(worksheet)
-    deleted = delete_cloud_draft(pm_name, division, week_start)
+    deleted = delete_cloud_draft(competition, pm_name, division, week_start)
     week_end = week_start + timedelta(days=4)
     draft_row = {
-        "draft_key": cloud_draft_key(pm_name, division, week_start),
+        "draft_key": cloud_draft_key(competition, pm_name, division, week_start),
+        "competition": competition,
         "week_start": str(week_start),
         "week_end": str(week_end),
         "division": division,
@@ -244,13 +256,14 @@ def save_cloud_draft(pm_name: str, division: str, week_start, rows: list[dict]) 
     return True, "Cloud draft saved. You can reopen this PM/division/week later from any computer."
 
 
-def report_records_for_sheet(report: dict, input_rows: list[dict]) -> list[dict]:
+def report_records_for_sheet(report: dict, input_rows: list[dict], competition: str) -> list[dict]:
     """Return one Google Sheets row per valid member record."""
     valid_input_rows = [r for r in input_rows if str(r.get("member_name", "")).strip()]
     records = []
     for idx, record in enumerate(report.get("records", [])):
         row = dict(record)
         raw = valid_input_rows[idx] if idx < len(valid_input_rows) else {}
+        row["competition"] = competition
         row["timestamp"] = report.get("created_at", row.get("created_at", ""))
         row["hours_invested"] = raw.get("hours_invested", 0)
         row["communication_score"] = raw.get("communication_score", 0)
@@ -260,39 +273,45 @@ def report_records_for_sheet(report: dict, input_rows: list[dict]) -> list[dict]
     return records
 
 
-def delete_existing_rows(worksheet, *, pm_name: str, division: str, week_start: str) -> int:
-    """Delete previous rows for the same PM/division/week, from bottom to top."""
+def delete_existing_rows(worksheet, *, competition: str, pm_name: str, division: str, week_start: str) -> int:
+    """Delete previous rows for the same PM/division/week/competition, from bottom to top."""
     rows = worksheet.get_all_records()
     to_delete = []
+    target_comp = str(competition).strip().lower()
     target_pm = str(pm_name).strip().lower()
     target_div = str(division).strip().lower()
     target_week = str(week_start).strip()
+    
     for offset, row in enumerate(rows, start=2):
+        row_comp = str(row.get("competition", "")).strip().lower()
         if (
-            str(row.get("pm_name", "")).strip().lower() == target_pm
+            row_comp == target_comp
+            and str(row.get("pm_name", "")).strip().lower() == target_pm
             and str(row.get("division", "")).strip().lower() == target_div
             and str(row.get("week_start", "")).strip() == target_week
         ):
             to_delete.append(offset)
+            
     for row_number in reversed(to_delete):
         worksheet.delete_rows(row_number)
     return len(to_delete)
 
 
-def append_report_to_sheet(report: dict, input_rows: list[dict], replace_existing: bool = True) -> tuple[int, int]:
+def append_report_to_sheet(report: dict, input_rows: list[dict], competition: str, replace_existing: bool = True) -> tuple[int, int]:
     worksheet = get_worksheet()
     headers = ensure_sheet_headers(worksheet)
     deleted = 0
     if replace_existing:
         deleted = delete_existing_rows(
             worksheet,
+            competition=competition,
             pm_name=report.get("pm_name", ""),
             division=report.get("division", ""),
             week_start=report.get("week_start", ""),
         )
         headers = ensure_sheet_headers(worksheet)
 
-    records = report_records_for_sheet(report, input_rows)
+    records = report_records_for_sheet(report, input_rows, competition)
     values = [[row.get(header, "") for header in headers] for row in records]
     if values:
         worksheet.append_rows(values, value_input_option="USER_ENTERED")
@@ -389,6 +408,14 @@ st.markdown(
     div[data-testid="stMarkdownContainer"] h1, div[data-testid="stMarkdownContainer"] h2, div[data-testid="stMarkdownContainer"] h3 { color: #f8fafc; }
     .hero div[data-testid="stMarkdownContainer"] p, .hero p { color: #e2e8f0 !important; }
     
+    /* Radio Button Segmented Control Styling */
+    div.row-widget.stRadio > div {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 20px;
+    }
+    
     /* Tabs Styling */
     button[data-baseweb="tab"] {
         color: #94a3b8 !important;
@@ -458,64 +485,39 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# -----------------------------------------------------------------------------
+# COMPETITION SELECTOR
+# -----------------------------------------------------------------------------
+st.markdown('<div class="glass" style="margin-bottom: 18px; padding: 16px 24px;">', unsafe_allow_html=True)
+st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 16px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
+competition_display = st.radio(
+    "Competition Program",
+    options=["Mars Mission", "Luna Mission"],
+    horizontal=True,
+    label_visibility="collapsed",
+    help="Select which competition program this weekly report belongs to."
+)
+st.markdown('</div>', unsafe_allow_html=True)
+
+competition = "Mars" if competition_display == "Mars Mission" else "Luna"
+
 with st.sidebar:
     st.header("Report setup")
     pm_name = st.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
     division = st.selectbox("Division", DIVISIONS, index=0)
 
-    # Calendar-style week picker. The PM clicks any date in a calendar, and the
-    # app converts that date into the Monday-Friday work week. This keeps the UI
-    # future-proof: PMs can jump to any previous or future week without a fixed
-    # dropdown range becoming outdated.
-    current_monday = today_monday()
-    if "report_calendar_date" not in st.session_state:
-        st.session_state.report_calendar_date = current_monday
-
-    st.markdown("**Work week calendar**")
-    nav_prev, nav_today, nav_next = st.columns(3)
-    with nav_prev:
-        if st.button("← Prev", use_container_width=True):
-            st.session_state.report_calendar_date = monday_for(st.session_state.report_calendar_date) - timedelta(days=7)
-            st.rerun()
-    with nav_today:
-        if st.button("This week", use_container_width=True):
-            st.session_state.report_calendar_date = current_monday
-            st.rerun()
-    with nav_next:
-        if st.button("Next →", use_container_width=True):
-            st.session_state.report_calendar_date = monday_for(st.session_state.report_calendar_date) + timedelta(days=7)
-            st.rerun()
-
-    selected_calendar_date = st.date_input(
-        "Click any day inside the work week",
-        key="report_calendar_date",
-        help="Pick any date. The app automatically stores the Monday-Friday week containing that date.",
+    center_monday = today_monday()
+    week_options = build_week_options(center_monday, weeks_back=12, weeks_forward=8)
+    default_week_index = week_options.index(center_monday) if center_monday in week_options else 12
+    week_start = st.selectbox(
+        "Report week",
+        options=week_options,
+        index=default_week_index,
+        format_func=week_range_label,
+        help="Pick the Monday-Friday work week being reported. Monday meetings usually review the previous week and plan the current week.",
     )
-    if isinstance(selected_calendar_date, tuple):
-        selected_calendar_date = selected_calendar_date[0]
-
-    week_start = monday_for(selected_calendar_date)
     week_end = week_start + timedelta(days=4)
-
-    st.markdown(
-        f"""
-        <div style="
-            margin-top: 10px;
-            padding: 14px 14px;
-            border-radius: 14px;
-            border: 1px solid rgba(255,255,255,0.14);
-            background: #0f172a;
-        ">
-            <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: .12em; font-weight: 900;">Selected work week</div>
-            <div style="font-size: 16px; color: #f8fafc; font-weight: 850; margin-top: 4px;">{week_range_label(week_start)}</div>
-            <div style="font-size: 12px; color: #cbd5e1; margin-top: 6px;">Stored as week_start = {week_start.isoformat()}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if selected_calendar_date.weekday() >= 5:
-        st.caption("Weekend selected; the report is still attached to the Monday-Friday work week containing that weekend.")
-    st.caption("Monday meetings can review the selected previous week, then PMs can switch to the next/current week to save upcoming plans.")
+    st.caption(f"Selected work week: **{week_range_label(week_start)}**")
     st.divider()
     st.caption("Score weights")
     for name, weight in METRIC_WEIGHTS.items():
@@ -536,8 +538,15 @@ if "hours_invested" not in init_df.columns:
 if "communication_score" not in init_df.columns:
     init_df["communication_score"] = 0.0
 
-current_draft_key = f"{pm_name}_{division}_{week_start}"
-draft_path = get_draft_path(pm_name, division, week_start)
+# Ensure capacity for 50 rows
+if len(init_df) < 50:
+    missing_rows = 50 - len(init_df)
+    pad_data = {c: ("" if c in ["member_name", "role", "notes"] else 0) for c in init_df.columns}
+    padding = pd.DataFrame([pad_data for _ in range(missing_rows)])
+    init_df = pd.concat([init_df, padding], ignore_index=True)
+
+current_draft_key = f"{competition}_{pm_name}_{division}_{week_start}"
+draft_path = get_draft_path(competition, pm_name, division, week_start)
 
 # Load draft safely. Cloud draft is preferred. Local draft is only fallback.
 if "tracker_df" not in st.session_state or st.session_state.get("last_draft_key") != current_draft_key:
@@ -547,9 +556,9 @@ if "tracker_df" not in st.session_state or st.session_state.get("last_draft_key"
 
     if pm_name.strip() and sheet_ok:
         try:
-            draft_records = load_cloud_draft(pm_name, division, week_start)
+            draft_records = load_cloud_draft(competition, pm_name, division, week_start)
             if draft_records is not None:
-                st.session_state.loaded_cloud_draft_message = f"Loaded saved cloud draft for {division}, {week_range_label(week_start)}."
+                st.session_state.loaded_cloud_draft_message = f"Loaded saved cloud draft for {competition}, {division}, {week_range_label(week_start)}."
         except Exception as exc:
             st.session_state.cloud_draft_load_error = str(exc)
 
@@ -628,7 +637,7 @@ with c_help:
         * **Notes:** Blockers, praise, or internal flags.
         """)
 
-st.info("Type freely in any tab. Click Save Progress to store the draft in Google Sheets by PM + division + selected week.")
+st.info("Type freely in any tab. Click Save Progress to store the draft in Google Sheets by Competition + PM + Division + Week.")
 
 # Wrapping the editors in a form stops Streamlit from rerunning the app while you type
 with st.form("weekly_data_form"):
@@ -640,6 +649,7 @@ with st.form("weekly_data_form"):
             key="editor_tab1",
             use_container_width=True,
             hide_index=True,
+            height=480, # Scrollable fixed height for 50 rows
             column_config=col_config_base
         )
     with tab2:
@@ -648,6 +658,7 @@ with st.form("weekly_data_form"):
             key="editor_tab2",
             use_container_width=True,
             hide_index=True,
+            height=480, # Scrollable fixed height
             column_config=col_config_locked
         )
     with tab3:
@@ -656,6 +667,7 @@ with st.form("weekly_data_form"):
             key="editor_tab3",
             use_container_width=True,
             hide_index=True,
+            height=480, # Scrollable fixed height
             column_config=col_config_locked
         )
 
@@ -676,7 +688,7 @@ if submit_edits:
         draft_records_to_save = st.session_state.tracker_df.to_dict(orient="records")
         if sheet_ok:
             try:
-                ok, message = save_cloud_draft(pm_name, division, week_start, draft_records_to_save)
+                ok, message = save_cloud_draft(competition, pm_name, division, week_start, draft_records_to_save)
                 if ok:
                     st.session_state.show_success = message
                 else:
@@ -714,6 +726,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 # --- REPORT GENERATION ---
 rows = st.session_state.tracker_df.fillna("").to_dict(orient="records")
 report = make_report(pm_name=pm_name, division=division, week_start=week_start, rows=rows)
+report["competition"] = competition  # Inject competition into JSON backup
 preview = pd.DataFrame(report["records"])
 
 st.markdown('<div class="glass">', unsafe_allow_html=True)
@@ -748,7 +761,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="glass">', unsafe_allow_html=True)
 st.subheader("Submit to Google Sheets")
-st.write("Final submission writes directly to the shared Google Sheet database. Drafts are saved to the separate `drafts` tab and final reports go to the `reports` tab.")
+st.write(f"Submitting **{competition} Mission** metrics to the Google Sheet database. Drafts are saved to `drafts` and final reports to `reports`.")
 
 if sheet_ok:
     st.success(sheet_msg)
@@ -757,7 +770,7 @@ else:
     st.caption("Add the Google service account and Sheet settings in Streamlit Cloud → Manage app → Settings → Secrets.")
 
 replace_existing = st.checkbox(
-    "Replace any previous rows for this same PM / division / week",
+    "Replace any previous rows for this same PM / Division / Week / Competition",
     value=True,
     help="Recommended. Prevents duplicate weekly submissions when a PM fixes and resubmits a report.",
 )
@@ -777,17 +790,17 @@ if save_clicked:
         st.error("Google Sheets is not configured yet. Check Streamlit Secrets.")
     else:
         try:
-            rows_written, rows_deleted = append_report_to_sheet(report, rows, replace_existing=replace_existing)
+            rows_written, rows_deleted = append_report_to_sheet(report, rows, competition, replace_existing=replace_existing)
             st.success(f"Submitted {rows_written} member row(s) to Google Sheets.")
             if rows_deleted:
-                st.info(f"Replaced {rows_deleted} old row(s) for this PM/division/week.")
+                st.info(f"Replaced {rows_deleted} old row(s) for {competition} / {pm_name} / {division} / {week_start}.")
             st.cache_data.clear()
 
             # Clear cloud/local drafts now that it is officially submitted.
             try:
-                deleted_drafts = delete_cloud_draft(pm_name, division, week_start)
+                deleted_drafts = delete_cloud_draft(competition, pm_name, division, week_start)
                 if deleted_drafts:
-                    st.info(f"Cleared {deleted_drafts} cloud draft row(s) for this PM/division/week.")
+                    st.info(f"Cleared {deleted_drafts} cloud draft row(s).")
             except Exception as draft_exc:
                 st.warning(f"Submitted successfully, but cloud draft cleanup failed: {draft_exc}")
             if draft_path.exists():
@@ -800,7 +813,7 @@ json_bytes = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
 st.download_button(
     "Download backup JSON",
     data=json_bytes,
-    file_name=f"{report['iso_year']}-W{report['iso_week']:02d}_{division.replace(' ', '_').replace('&', 'and')}_weekly_report.json",
+    file_name=f"{report['iso_year']}-W{report['iso_week']:02d}_{competition}_{division.replace(' ', '_').replace('&', 'and')}_weekly_report.json",
     mime="application/json",
     use_container_width=True,
 )
