@@ -862,6 +862,42 @@ elif current_page == "◷ Mission Schedule":
 # PAGE: CONTENT CALENDAR
 # -----------------------------------------------------------------------------
 elif current_page == "▦ Content Calendar":
+    
+    if "cc_filter_month" not in st.session_state:
+        st.session_state.cc_filter_month = calendar.month_name[date.today().month]
+    if "cc_filter_year" not in st.session_state:
+        st.session_state.cc_filter_year = _cy
+
+    def go_prev_month():
+        if st.session_state.cc_filter_month == "All" or st.session_state.cc_filter_year == "All":
+            st.session_state.cc_filter_month = calendar.month_name[date.today().month]
+            st.session_state.cc_filter_year = _cy
+            return
+        m_idx = MONTHS_LIST.index(st.session_state.cc_filter_month) + 1
+        y = int(st.session_state.cc_filter_year)
+        if m_idx == 1:
+            m_idx = 12
+            y -= 1
+        else:
+            m_idx -= 1
+        st.session_state.cc_filter_month = calendar.month_name[m_idx]
+        st.session_state.cc_filter_year = y
+
+    def go_next_month():
+        if st.session_state.cc_filter_month == "All" or st.session_state.cc_filter_year == "All":
+            st.session_state.cc_filter_month = calendar.month_name[date.today().month]
+            st.session_state.cc_filter_year = _cy
+            return
+        m_idx = MONTHS_LIST.index(st.session_state.cc_filter_month) + 1
+        y = int(st.session_state.cc_filter_year)
+        if m_idx == 12:
+            m_idx = 1
+            y += 1
+        else:
+            m_idx += 1
+        st.session_state.cc_filter_month = calendar.month_name[m_idx]
+        st.session_state.cc_filter_year = y
+
     st.markdown(
         f"""
         <div class="hero">
@@ -895,18 +931,12 @@ elif current_page == "▦ Content Calendar":
     
     cal_cycle = c2.selectbox("Cycle Filter", ["All"] + DYNAMIC_CYCLES, index=0)
     
-    # Intelligently default the month and year so the calendar shows up immediately!
-    current_month_name = calendar.month_name[date.today().month]
-    month_opts = ["All"] + MONTHS_LIST
-    default_month_idx = month_opts.index(current_month_name) if current_month_name in month_opts else 0
-    
-    cal_month = c3.selectbox("Month Filter", month_opts, index=default_month_idx)
+    cal_month = c3.selectbox("Month Filter", ["All"] + MONTHS_LIST, key="cc_filter_month")
     
     c4, c5, c6 = st.columns(3)
-    year_opts = ["All", _cy - 1, _cy, _cy + 1, _cy + 2]
-    default_year_idx = year_opts.index(_cy) if _cy in year_opts else 0
+    year_opts = ["All"] + list(range(_cy - 2, _cy + 5))
     
-    cal_year = c4.selectbox("Year Filter", year_opts, index=default_year_idx)
+    cal_year = c4.selectbox("Year Filter", year_opts, key="cc_filter_year")
     cal_platform = c5.selectbox("Platform Filter", ["All"] + list(PLATFORM_COLORS.keys()), index=0)
     cal_status = c6.selectbox("Status Filter", ["All"] + list(STATUS_SYMBOLS.keys()), index=0)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -960,7 +990,15 @@ elif current_page == "▦ Content Calendar":
     # Monthly Calendar Preview
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     if cal_month != "All" and cal_year != "All":
-        st.markdown(f"### ◫ {cal_month} {cal_year} Preview")
+        
+        c_prev, c_title, c_next = st.columns([1, 6, 1])
+        with c_prev:
+            st.button("◀ Prev", on_click=go_prev_month, use_container_width=True, key="btn_prev_month")
+        with c_title:
+            st.markdown(f"<h3 style='text-align:center; margin-top:0;'>◫ {cal_month} {cal_year} Preview</h3>", unsafe_allow_html=True)
+        with c_next:
+            st.button("Next ▶", on_click=go_next_month, use_container_width=True, key="btn_next_month")
+            
         month_idx = MONTHS_LIST.index(cal_month) + 1
         cal_grid = calendar.monthcalendar(int(cal_year), month_idx)
         day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
