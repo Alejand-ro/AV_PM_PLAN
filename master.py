@@ -894,11 +894,19 @@ elif current_page == "▦ Content Calendar":
     cal_mission = c1.selectbox("Mission Filter", ["All", "Mars", "Luna", "General"], index=default_mission_idx)
     
     cal_cycle = c2.selectbox("Cycle Filter", ["All"] + DYNAMIC_CYCLES, index=0)
-    cal_month = c3.selectbox("Month Filter", ["All"] + MONTHS_LIST, index=0)
+    
+    # Intelligently default the month and year so the calendar shows up immediately!
+    current_month_name = calendar.month_name[date.today().month]
+    month_opts = ["All"] + MONTHS_LIST
+    default_month_idx = month_opts.index(current_month_name) if current_month_name in month_opts else 0
+    
+    cal_month = c3.selectbox("Month Filter", month_opts, index=default_month_idx)
     
     c4, c5, c6 = st.columns(3)
     year_opts = ["All", _cy - 1, _cy, _cy + 1, _cy + 2]
-    cal_year = c4.selectbox("Year Filter", year_opts, index=0)
+    default_year_idx = year_opts.index(_cy) if _cy in year_opts else 0
+    
+    cal_year = c4.selectbox("Year Filter", year_opts, index=default_year_idx)
     cal_platform = c5.selectbox("Platform Filter", ["All"] + list(PLATFORM_COLORS.keys()), index=0)
     cal_status = c6.selectbox("Status Filter", ["All"] + list(STATUS_SYMBOLS.keys()), index=0)
     st.markdown('</div>', unsafe_allow_html=True)
