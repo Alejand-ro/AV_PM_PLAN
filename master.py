@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -49,14 +50,47 @@ SHEET_COLUMNS = [
 PLANNED_HEADERS = ["task", "start_date", "start_offset", "duration", "end_date", "phase"]
 ACTUAL_HEADERS = ["task", "actual_start_date", "actual_end_date", "percent_complete", "status", "owner", "notes", "last_updated"]
 
+CONTENT_CAL_COLUMNS = [
+    "content_id", "mission", "cycle", "month", "planned_date", "platform",
+    "content_title", "description", "content_type", "owner", "status",
+    "actual_posted_date", "marked_done_at", "notes", "created_at", "updated_at"
+]
+
+PLATFORM_COLORS = {
+    "No post day": "#ef4444", 
+    "Outreach Activity": "#f97316",
+    "LinkedIn": "#eab308", 
+    "Email": "#22c55e", 
+    "X": "#2dd4bf",
+    "TikTok": "#38bdf8", 
+    "Facebook": "#c084fc", 
+    "YouTube": "#f43f5e",
+    "Instagram": "#d946ef", 
+    "Other": "#94a3b8"
+}
+
+STATUS_SYMBOLS = {
+    "Planned": "◌", 
+    "In Progress": "◐", 
+    "Posted": "●",
+    "Missed": "⚠", 
+    "Cancelled": "×", 
+    "Rescheduled": "↷"
+}
+
+STATUS_CHART_COLORS = {
+    "Posted": "#22c55e", "Planned": "#3b82f6", "In Progress": "#eab308",
+    "Missed": "#ef4444", "Cancelled": "#94a3b8", "Rescheduled": "#a855f7"
+}
+
 # --- DYNAMIC YEARLY CYCLES ---
-# Automatically scales: Previous Cycle, Current Cycle, Next Cycle based on the current year.
 _cy = date.today().year
 DYNAMIC_CYCLES = [
     f"{_cy-1}-{_cy}",
     f"{_cy}-{_cy+1}",
     f"{_cy+1}-{_cy+2}"
 ]
+MONTHS_LIST = list(calendar.month_name)[1:]
 
 def google_sheet_ready() -> tuple[bool, str]:
     missing = []
@@ -133,13 +167,11 @@ def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token
 
 # --- SCHEDULE & GANTT HELPER FUNCTIONS ---
 def get_schedule_tab_name(mission: str, cycle: str, kind: str) -> str:
-    # Strictly formats as 'Mars' or 'Luna' to match Google Sheets exactly
     m = "Mars" if mission == "Mars" else "Luna"
     return f"{kind}_schedule_{m}_{cycle}"
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str], force_refresh_token=0) -> pd.DataFrame:
-    # Only loads. Does NOT create an empty tab in Google sheets if missing.
     try:
         ws = _client.worksheet(worksheet_name)
         records = ws.get_all_records()
@@ -157,14 +189,12 @@ def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str
         return pd.DataFrame(columns=required_headers)
 
 def save_schedule_sheet(_client, worksheet_name: str, df: pd.DataFrame, headers: list[str]):
-    # Attempts to save. IF tab is missing, creates it, writes headers, and appends rows.
     try:
         ws = _client.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
         ws = _client.add_worksheet(title=worksheet_name, rows=200, cols=len(headers))
         ws.update("1:1", [headers])
     
-    # In case someone manually created a blank sheet without headers
     existing = ws.row_values(1)
     if not existing:
         ws.update("1:1", [headers])
@@ -270,6 +300,30 @@ def build_plan_vs_actual_dataframe(planned_df: pd.DataFrame, actual_df: pd.DataF
         return "In Progress"
 
     df["schedule_status"] = df.apply(calculate_status, axis=1)
+    return df
+
+# --- CONTENT CALENDAR HELPER FUNCTIONS ---
+@st.cache_data(ttl=600, show_spinner=False)
+def load_content_calendar(_client, force_refresh_token=0) -> pd.DataFrame:
+    worksheet_name = "content_calendar"
+    try:
+        worksheet = _client.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        worksheet = _client.add_worksheet(title=worksheet_name, rows=1000, cols=len(CONTENT_CAL_COLUMNS))
+        worksheet.update("1:1", [CONTENT_CAL_COLUMNS])
+        return pd.DataFrame(columns=CONTENT_CAL_COLUMNS)
+        
+    records = worksheet.get_all_records()
+    if not records:
+        return pd.DataFrame(columns=CONTENT_CAL_COLUMNS)
+        
+    df = pd.DataFrame(records)
+    for col in CONTENT_CAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+            
+    df["planned_date_dt"] = pd.to_datetime(df["planned_date"], errors="coerce")
+    df["actual_posted_date_dt"] = pd.to_datetime(df["actual_posted_date"], errors="coerce")
     return df
 
 # -----------------------------------------------------------------------------
@@ -528,6 +582,32 @@ st.markdown(
     
     h1, h2, h3, p, li {{ color: var(--ink) !important; }}
     .chart-desc {{ font-size: 14px; color: #94a3b8; margin-top: -10px; margin-bottom: 20px; border-left: 3px solid var(--primary); padding-left: 12px;}}
+    
+    /* Calendar Cell Styling */
+    .cal-day {{
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        min-height: 130px;
+        padding: 8px;
+        background: rgba(0,0,0,0.2);
+        margin-bottom: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }}
+    .cal-day.empty {{ background: transparent; border: 1px dashed rgba(255,255,255,0.05); }}
+    .cal-date {{ font-weight: 800; color: #cbd5e1; font-size: 14px; margin-bottom: 4px; }}
+    .cal-badge {{
+        font-size: 11px;
+        padding: 4px 6px;
+        border-radius: 4px;
+        color: #000000;
+        font-weight: 700;
+        line-height: 1.2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
 </style>
 """,
     unsafe_allow_html=True,
@@ -566,7 +646,7 @@ def metric_delta_text(current: float | None, previous: float | None) -> str:
 # SIDEBAR / NAVIGATION
 # -----------------------------------------------------------------------------
 st.sidebar.header("⌖ Navigation")
-current_page = st.sidebar.radio("Go to", ["▦ Dashboard Overview", "◷ Mission Schedule", "⌖ Gantt Management"])
+current_page = st.sidebar.radio("Go to", ["▦ Dashboard Overview", "◷ Mission Schedule", "⌖ Gantt Management", "▦ Content Calendar"])
 
 sheet_ok, sheet_msg = google_sheet_ready()
 
@@ -585,6 +665,8 @@ with st.sidebar:
     else:
         st.error(sheet_msg)
         st.stop()
+
+client = get_spreadsheet()
 
 # -----------------------------------------------------------------------------
 # PAGE: GANTT MANAGEMENT
@@ -677,7 +759,6 @@ if current_page == "⌖ Gantt Management":
     gantt_mode = c3.radio("Schedule Mode", ["Planned Baseline", "Actual Outcome"])
     st.markdown('</div>', unsafe_allow_html=True)
     
-    client = get_spreadsheet()
     plan_df = load_planned_schedule(gantt_mission, gantt_cycle, client, st.session_state.force_refresh)
     act_df = load_actual_schedule(gantt_mission, gantt_cycle, client, st.session_state.force_refresh)
     
@@ -763,8 +844,6 @@ elif current_page == "◷ Mission Schedule":
     cycle_choice = st.selectbox("Active Yearly Cycle", DYNAMIC_CYCLES, index=1)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    client = get_spreadsheet()
-    
     def render_schedule_panel(render_mission: str, cycle: str, db_client, r_token):
         st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.markdown(f"<h2>◈ {render_mission} Mission Tracker ({cycle})</h2>", unsafe_allow_html=True)
@@ -778,6 +857,219 @@ elif current_page == "◷ Mission Schedule":
         render_schedule_panel("Luna", cycle_choice, client, st.session_state.force_refresh)
     else:
         render_schedule_panel(competition, cycle_choice, client, st.session_state.force_refresh)
+
+# -----------------------------------------------------------------------------
+# PAGE: CONTENT CALENDAR
+# -----------------------------------------------------------------------------
+elif current_page == "▦ Content Calendar":
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero-content">
+            <div class="av-logo-container">
+                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                <div>
+                    <div class="eyebrow">Project AV • Analytics</div>
+                    <div class="title">Content Calendar Command</div>
+                </div>
+            </div>
+            <div class="subtitle" style="margin-top: 10px;">
+              Track planned outreach against actual execution across missions, platforms, and monthly cycles.
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    cal_df = load_content_calendar(client, st.session_state.force_refresh)
+    
+    # Filters
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    
+    default_mission_idx = 0
+    if competition == "Mars": default_mission_idx = 1
+    elif competition == "Luna": default_mission_idx = 2
+    cal_mission = c1.selectbox("Mission Filter", ["All", "Mars", "Luna", "General"], index=default_mission_idx)
+    
+    cal_cycle = c2.selectbox("Cycle Filter", ["All"] + DYNAMIC_CYCLES, index=0)
+    cal_month = c3.selectbox("Month Filter", ["All"] + MONTHS_LIST, index=0)
+    
+    c4, c5, c6 = st.columns(3)
+    year_opts = ["All", _cy - 1, _cy, _cy + 1, _cy + 2]
+    cal_year = c4.selectbox("Year Filter", year_opts, index=0)
+    cal_platform = c5.selectbox("Platform Filter", ["All"] + list(PLATFORM_COLORS.keys()), index=0)
+    cal_status = c6.selectbox("Status Filter", ["All"] + list(STATUS_SYMBOLS.keys()), index=0)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if cal_df.empty:
+        st.info("ⓘ No content calendar data found yet. Add planned content from the PM app.")
+        st.stop()
+
+    filtered_cal = cal_df.copy()
+    if cal_mission != "All": filtered_cal = filtered_cal[filtered_cal["mission"] == cal_mission]
+    if cal_cycle != "All": filtered_cal = filtered_cal[filtered_cal["cycle"] == cal_cycle]
+    if cal_month != "All": filtered_cal = filtered_cal[filtered_cal["month"] == cal_month]
+    if cal_year != "All": filtered_cal = filtered_cal[filtered_cal["planned_date_dt"].dt.year == int(cal_year)]
+    if cal_platform != "All": filtered_cal = filtered_cal[filtered_cal["platform"] == cal_platform]
+    if cal_status != "All": filtered_cal = filtered_cal[filtered_cal["status"] == cal_status]
+
+    if filtered_cal.empty:
+        st.warning("⚠ No content matches the selected filters.")
+        st.stop()
+
+    # Variance and KPIs
+    filtered_cal["posting_variance_days"] = (filtered_cal["actual_posted_date_dt"] - filtered_cal["planned_date_dt"]).dt.days
+    
+    # Exclude truly blank padding rows
+    valid_items = filtered_cal[filtered_cal["platform"] != ""]
+    # Exclude No post day from requirement counts
+    req_items = valid_items[valid_items["platform"] != "No post day"]
+    
+    planned_count = len(req_items)
+    posted_items = req_items[(req_items["status"] == "Posted") | pd.notna(req_items["actual_posted_date_dt"])]
+    posted_count = len(posted_items)
+    pending_count = len(req_items[req_items["status"].isin(["Planned", "In Progress", "Rescheduled"]) & pd.isna(req_items["actual_posted_date_dt"])])
+    missed_count = len(req_items[req_items["status"] == "Missed"])
+    
+    late_count = len(posted_items[posted_items["posting_variance_days"] > 0])
+    ontime_count = len(posted_items[posted_items["posting_variance_days"] <= 0])
+    
+    comp_rate = (posted_count / planned_count * 100) if planned_count > 0 else 0
+
+    st.markdown('<div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:24px;">', unsafe_allow_html=True)
+    m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+    m1.metric("Completion Rate", f"{comp_rate:.1f}%")
+    m2.metric("Planned Items", planned_count)
+    m3.metric("Posted", posted_count)
+    m4.metric("Pending", pending_count)
+    m5.metric("Missed", missed_count)
+    m6.metric("Late", late_count)
+    m7.metric("On-Time", ontime_count)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Monthly Calendar Preview
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    if cal_month != "All" and cal_year != "All":
+        st.markdown(f"### ◫ {cal_month} {cal_year} Preview")
+        month_idx = MONTHS_LIST.index(cal_month) + 1
+        cal_grid = calendar.monthcalendar(int(cal_year), month_idx)
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        
+        cols = st.columns(7)
+        for i, d_name in enumerate(day_names):
+            cols[i].markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:800; font-size:14px; margin-bottom:8px;'>{d_name}</div>", unsafe_allow_html=True)
+            
+        for week in cal_grid:
+            cols = st.columns(7)
+            for i, day in enumerate(week):
+                if day == 0:
+                    cols[i].markdown("<div class='cal-day empty'></div>", unsafe_allow_html=True)
+                else:
+                    date_str = f"{cal_year}-{month_idx:02d}-{day:02d}"
+                    day_items = valid_items[valid_items["planned_date"] == date_str]
+                    
+                    content_html = ""
+                    for _, item in day_items.iterrows():
+                        platform = item.get("platform", "Other")
+                        title = item.get("content_title", "Untitled")
+                        status = item.get("status", "Planned")
+                        bg_color = PLATFORM_COLORS.get(platform, "#94a3b8")
+                        symbol = STATUS_SYMBOLS.get(status, "◌")
+                        content_html += f"<div class='cal-badge' style='background:{bg_color};' title='{title}'>{symbol} {platform}</div>"
+                        
+                    opacity = "0.5" if i >= 5 else "1.0"
+                    cols[i].markdown(f"""
+                    <div class='cal-day' style='opacity: {opacity};'>
+                        <div class='cal-date'>{day}</div>
+                        {content_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+    else:
+        st.info("ⓘ Select a specific Month and Year in the filters above to view the visual calendar layout.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    r1, r2 = st.columns([1.5, 1])
+    with r1:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.subheader("Plan vs. Actual Execution")
+        st.markdown('<div class="chart-desc">Tracks planned content dates against actual execution delivery.</div>', unsafe_allow_html=True)
+        
+        if not req_items.empty:
+            planned_counts = req_items.dropna(subset=["planned_date_dt"]).groupby(req_items["planned_date_dt"].dt.date).size().reset_index(name="Planned")
+            planned_counts.rename(columns={"planned_date_dt": "Date"}, inplace=True)
+            
+            actual_counts = req_items.dropna(subset=["actual_posted_date_dt"]).groupby(req_items["actual_posted_date_dt"].dt.date).size().reset_index(name="Posted")
+            actual_counts.rename(columns={"actual_posted_date_dt": "Date"}, inplace=True)
+            
+            merged_counts = pd.merge(planned_counts, actual_counts, on="Date", how="outer").fillna(0).sort_values("Date")
+            
+            fig_pva = go.Figure()
+            fig_pva.add_trace(go.Bar(x=merged_counts["Date"], y=merged_counts["Planned"], name="Planned", marker_color="rgba(255,255,255,0.2)"))
+            fig_pva.add_trace(go.Scatter(x=merged_counts["Date"], y=merged_counts["Posted"], name="Actual Posted", mode="lines+markers", line=dict(color=primary, width=3), marker=dict(size=8)))
+            st.plotly_chart(plotly_theme(fig_pva), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with r2:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.subheader("Platform Breakdown")
+        st.markdown('<div class="chart-desc">Distribution of scheduled content platforms.</div>', unsafe_allow_html=True)
+        if not req_items.empty:
+            plat_counts = req_items["platform"].value_counts().reset_index()
+            plat_counts.columns = ["Platform", "Count"]
+            fig_plat = px.pie(plat_counts, values="Count", names="Platform", color="Platform", color_discrete_map=PLATFORM_COLORS, hole=0.4)
+            st.plotly_chart(plotly_theme(fig_plat), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    r3, r4 = st.columns([1, 1])
+    with r3:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.subheader("Status Breakdown")
+        if not req_items.empty:
+            stat_counts = req_items["status"].value_counts().reset_index()
+            stat_counts.columns = ["Status", "Count"]
+            fig_stat = px.bar(stat_counts, x="Status", y="Count", color="Status", color_discrete_map=STATUS_CHART_COLORS)
+            st.plotly_chart(plotly_theme(fig_stat), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    with r4:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.subheader("Late/Early Analysis")
+        st.markdown('<div class="chart-desc">Negative values indicate early execution. Positive values indicate late execution.</div>', unsafe_allow_html=True)
+        variance_view = req_items.dropna(subset=["posting_variance_days"]).copy()
+        if not variance_view.empty:
+            variance_view = variance_view[["mission", "platform", "planned_date", "actual_posted_date", "posting_variance_days", "status"]]
+            st.dataframe(variance_view.sort_values("posting_variance_days", ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.info("ⓘ No executed items with variance to display.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader("▦ Content Execution Table")
+    
+    top_platforms = req_items["platform"].value_counts().head(2).index.tolist()
+    plat_str = " and ".join(top_platforms) if top_platforms else "Various platforms"
+    summary_text = f"**Executive Summary:** For the selected filters, there were {planned_count} planned content items, with {posted_count} successfully posted and {missed_count} missed. "
+    if late_count > 0:
+        summary_text += f"There were {late_count} late posts. "
+    summary_text += f"{plat_str} had the highest planned volume. The overall completion rate stands at {comp_rate:.1f}%."
+    st.markdown(summary_text)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    view_cols = ["mission", "cycle", "month", "planned_date", "platform", "content_title", "description", "content_type", "owner", "status", "actual_posted_date", "posting_variance_days", "notes"]
+    final_view = valid_items[view_cols].sort_values(["planned_date"], ascending=False)
+    st.dataframe(final_view, use_container_width=True, hide_index=True)
+    
+    st.download_button(
+        "⬇ Export Content Matrix to CSV",
+        data=final_view.to_csv(index=False).encode("utf-8"),
+        file_name=f"content_calendar_export_{date.today().isoformat()}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        type="primary"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # PAGE: DASHBOARD OVERVIEW
@@ -817,9 +1109,8 @@ elif current_page == "▦ Dashboard Overview":
         st.session_state.competition = new_comp
         st.rerun()
 
-    client = get_spreadsheet()
     worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
-    raw_df, warnings = load_reports_from_google_sheets(client, worksheet_name, force_refresh_token=st.session_state.force_refresh)
+    raw_df, warnings = load_reports_from_google_sheets(get_spreadsheet(), worksheet_name, force_refresh_token=st.session_state.force_refresh)
 
     if not raw_df.empty:
         if "week_start_dt" not in raw_df.columns:
