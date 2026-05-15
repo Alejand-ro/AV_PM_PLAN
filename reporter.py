@@ -214,7 +214,7 @@ def save_planner_data(edited_df, original_df, cols, sheet_name, id_col):
             status = row.get("status", "")
             delay_flag, delay_days = False, 0
             if pd.notnull(dd):
-                if status not in ["Completed", "Cancelled"] and today > dd:
+                if status not in ["Completed", "Cancelled", "Blocked"] and today > dd:
                     delay_flag, delay_days = True, (today - dd).days
                 elif status == "Completed" and pd.notnull(cd) and cd > dd:
                     delay_flag, delay_days = True, (cd - dd).days
@@ -406,7 +406,7 @@ def queue_notification(task_row, df_notif, custom_subject=None, custom_msg=None)
     
     new_notif = pd.DataFrame([{
         "notification_id": str(uuid.uuid4()),
-        "task_id": task_row["task_id"],
+        "task_id": task_row.get("task_id", ""),
         "notification_type": "Reminder",
         "recipient": task_row.get("assigned_to", ""),
         "cc_people": task_row.get("cc_people", ""),
@@ -416,6 +416,14 @@ def queue_notification(task_row, df_notif, custom_subject=None, custom_msg=None)
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }])
     save_planner_data(new_notif, df_notif, PLANNER_NOTIFICATIONS_COLS, "planner_notifications_queue", "notification_id")
+
+def status_color(status):
+    colors = {"Not Started": "#4b5563", "In Progress": "#3b82f6", "Blocked": "#ef4444", "In Review": "#a855f7", "Completed": "#22c55e", "Cancelled": "#6b7280"}
+    return colors.get(status, "#4b5563")
+
+def priority_color(priority):
+    colors = {"Low": "#6b7280", "Medium": "#3b82f6", "High": "#f97316", "Critical": "#ef4444"}
+    return colors.get(priority, "#6b7280")
 
 def normalize_tracker_df(records: list[dict], template_df: pd.DataFrame) -> pd.DataFrame:
     if not records:
@@ -473,8 +481,9 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
         worksheet.append_rows(values, value_input_option="USER_ENTERED")
     return len(values), deleted
 
+
 # --- DIALOGS (POPUPS) FOR CLEANER CREATION ---
-@st.dialog("+ Create New Task")
+@st.dialog("+ Create New Task", width="large")
 def create_task_dialog(mission, cycle, division, members, df_tasks, df_memb, df_notif):
     st.markdown("Fill out the details to assign a new task to your board.")
     with st.form("new_task_form"):
@@ -527,7 +536,83 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, df_memb, df_
                 
                 st.rerun()
 
-@st.dialog("+ Schedule Content")
+@st.dialog("◈ Task Details", width="large")
+def task_details_dialog(selected_id, view_df, df_tasks, df_check, df_comm, df_memb, df_notif, df_links):
+    t_row = view_df[view_df["task_id"] == selected_id].iloc[0]
+    st.subheader(f"◈ {t_row['title']}")
+    
+    det_c1, det_c2 = st.columns([2, 1])
+    with det_c1:
+        st.markdown(f"**Description:** {t_row.get('description', 'No description')}")
+        assignee_name = t_row.get('assigned_to', 'Unassigned')
+        st.markdown(f"**Assigned To:** {assignee_name}")
+        if assignee_name != 'Unassigned' and not df_memb.empty:
+            mem_info = df_memb[df_memb['member_name'] == assignee_name]
+            if not mem_info.empty:
+                m_email = mem_info.iloc[0].get("email", "No email")
+                m_role = mem_info.iloc[0].get("role", "No role")
+                st.caption(f"✉ {m_email} | ⚙ {m_role}")
+                
+        st.markdown(f"**CC:** {t_row.get('cc_people', '')}")
+        st.markdown(f"**Linked Gantt Task:** {t_row.get('linked_gantt_task', 'None')}")
+        if t_row.get('deliverable_link'):
+            st.markdown(f"[↗ View Deliverable]({t_row['deliverable_link']})")
+        
+        st.markdown("---")
+        st.markdown("#### Checklist")
+        t_check = df_check[df_check["task_id"] == selected_id].copy() if not df_check.empty else pd.DataFrame(columns=PLANNER_CHECKLIST_COLS)
+        if not t_check.empty: t_check["task_id"] = selected_id
+        
+        ed_check = st.data_editor(t_check, num_rows="dynamic", use_container_width=True, key=f"chk_{selected_id}")
+        if st.button("Save Checklist"):
+            for idx, r in ed_check.iterrows():
+                if not r.get("checklist_item_id"):
+                    ed_check.at[idx, "checklist_item_id"] = str(uuid.uuid4())
+                ed_check.at[idx, "task_id"] = selected_id
+            save_planner_data(ed_check, df_check, PLANNER_CHECKLIST_COLS, "planner_task_checklist", "checklist_item_id")
+            st.rerun()
+        
+    with det_c2:
+        with st.container(border=True):
+            st.markdown("**Status & Timeline**")
+            p_color = priority_color(t_row.get("priority", "Low"))
+            s_color = status_color(t_row.get("status", "Not Started"))
+            st.markdown(f"**Priority:** <span style='color:{p_color}'>■ {t_row.get('priority')}</span>", unsafe_allow_html=True)
+            st.markdown(f"**Status:** <span style='color:{s_color}'>● {t_row.get('status')}</span>", unsafe_allow_html=True)
+            st.markdown(f"**% Complete:** {t_row.get('percent_complete', 0)}%")
+            st.markdown(f"**Due Date:** {t_row.get('due_date', '')}")
+            if str(t_row.get("delay_flag", "False")).lower() == "true":
+                st.markdown(f"<span style='color:#ef4444'>⚠ Delayed by {t_row.get('delay_days', 0)} days</span>", unsafe_allow_html=True)
+            
+            st.markdown("---")
+            st.markdown("**Actions**")
+            if st.button("↻ Queue Reminder Email", help="Prepares an email notification for a future send cycle."):
+                queue_notification(t_row, df_notif)
+                st.success("Reminder queued.")
+
+    st.markdown("---")
+    st.markdown("#### Comments")
+    t_comm = df_comm[df_comm["task_id"] == selected_id] if not df_comm.empty else pd.DataFrame(columns=PLANNER_COMMENTS_COLS)
+    for _, c in t_comm.iterrows():
+        with st.chat_message("user"):
+            st.markdown(f"**{c['author']}** ({c['created_at']})")
+            st.markdown(c['comment'])
+    
+    with st.form("new_comment"):
+        c_text = st.text_area("Add a comment")
+        c_submit = st.form_submit_button("Post Comment")
+        if c_submit and c_text:
+            new_c = pd.DataFrame([{
+                "comment_id": str(uuid.uuid4()),
+                "task_id": selected_id,
+                "author": "Current PM", 
+                "comment": c_text,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }])
+            save_planner_data(new_c, df_comm, PLANNER_COMMENTS_COLS, "planner_task_comments", "comment_id")
+            st.rerun()
+
+@st.dialog("+ Schedule Content", width="large")
 def create_content_dialog(mission, cycle, month_name, year_val):
     st.markdown("Draft new content for your social or outreach pipelines.")
     with st.form("new_content_form"):
@@ -569,7 +654,7 @@ def create_content_dialog(mission, cycle, month_name, year_val):
                 save_content_calendar_month(new_row, mission, cycle, month_name, y_int)
                 st.rerun()
 
-@st.dialog("+ Plan Fundraiser Event")
+@st.dialog("+ Plan Fundraiser Event", width="large")
 def create_fundraiser_dialog(mission, cycle, df_events):
     with st.form("new_event_form"):
         name = st.text_input("Event Name *")
@@ -701,7 +786,7 @@ with st.sidebar:
     global_mission = st.selectbox("Mission Filter", ["Mars", "Luna"], index=0 if st.session_state.competition == "Mars" else 1)
     st.session_state.competition = global_mission
     
-    active_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in ["electrical", "vehicle", "software"])] if global_mission == "Luna" else list(DIVISIONS)
+    active_divisions = [d for d in list(DIVISIONS.keys()) if any(k in d.lower() for k in ["electrical", "vehicle", "software"])] if global_mission == "Luna" else list(DIVISIONS.keys())
 
     if current_page == "▦ Weekly Performance Report":
         st.info("ⓘ Filters for the weekly report are located on the main page.")
@@ -711,6 +796,7 @@ with st.sidebar:
         plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
         plan_division = st.selectbox("Division Filter", active_divisions, index=0)
         plan_assignee = st.selectbox("Assignee Filter", ["All"] + member_opts, help="Filter the board for a specific team member.")
+        st.divider()
         
     elif current_page == "◫ Content Calendar":
         cal_mission = global_mission
@@ -906,6 +992,8 @@ if current_page == "▦ Weekly Performance Report":
         """, unsafe_allow_html=True
     )
 
+    active_divisions = list(DIVISIONS.keys()) if global_mission != "Luna" else [d for d in DIVISIONS if any(k in d.lower() for k in ["electrical", "vehicle", "software"])]
+
     legend_html = "".join(f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>' for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions)
     st.markdown(f'<div class="glass"><b>Official Division Legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
 
@@ -1048,7 +1136,6 @@ if current_page == "▦ Weekly Performance Report":
             st.success(f"ⓘ Submitted {rows_written} member row(s) to Google Sheets.")
             delete_cloud_draft(global_mission, pm_name, division, week_start)
     st.markdown('</div>', unsafe_allow_html=True)
-
 
 # -----------------------------------------------------------------------------
 # PAGE: CONTENT CALENDAR
@@ -1388,10 +1475,10 @@ elif current_page == "▦ Planner":
     if not view_df.empty:
         view_df = view_df[view_df["mission"] == plan_mission]
         view_df = view_df[view_df["cycle"] == plan_cycle]
-        view_df = view_df[view_df["division"] == plan_division]
+        if plan_division != "All": view_df = view_df[view_df["division"] == plan_division]
         if plan_assignee != "All": view_df = view_df[view_df["assigned_to"] == plan_assignee]
 
-    tabs = st.tabs(["▦ Board View", "▦ Bulk Table Editor", "◈ Task Details", "❖ Team Directory"])
+    tabs = st.tabs(["▦ Board View", "▦ Bulk Table Editor", "❖ Team Directory"])
     
     with tabs[0]:
         st.markdown("### ▦ Board View")
@@ -1399,7 +1486,7 @@ elif current_page == "▦ Planner":
         c_action, _ = st.columns([1, 4])
         with c_action:
             if st.button("+ Create Task", type="primary", use_container_width=True):
-                create_task_dialog(plan_mission, plan_cycle, plan_division, member_opts, df_tasks, df_memb, df_notif)
+                create_task_dialog(plan_mission, plan_cycle, plan_division if plan_division != "All" else list(active_divisions)[0], member_opts, df_tasks, df_memb, df_notif)
 
         st.markdown("<br>", unsafe_allow_html=True)
         buckets = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
@@ -1428,6 +1515,12 @@ elif current_page == "▦ Planner":
                                     update_df["completed_date"] = date.today().strftime("%Y-%m-%d")
                                     update_df["percent_complete"] = 100
                                 save_planner_data(update_df, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+                                
+                                # Auto queue notification on status change!
+                                subj = f"Task Status Updated: {row['title']}"
+                                msg = f"Task <strong>{row['title']}</strong> status changed to <strong>{new_stat}</strong>."
+                                queue_notification(update_df.iloc[0], df_notif, custom_subject=subj, custom_msg=msg)
+                                
                                 st.rerun()
 
                             asign = row.get('assigned_to', 'Unassigned')
@@ -1446,9 +1539,8 @@ elif current_page == "▦ Planner":
                             if str(row.get("delay_flag", "False")).lower() == "true":
                                 st.markdown("<span style='color:#ef4444; font-size:12px;'>⚠ Overdue</span>", unsafe_allow_html=True)
                                 
-                            if st.button("View Details", key=f"btn_view_{row['task_id']}"):
-                                st.session_state["selected_task_id"] = row["task_id"]
-                                st.info("Task selected! Open '◈ Task Details' tab.")
+                            if st.button("View / Edit Details", key=f"btn_view_{row['task_id']}"):
+                                task_details_dialog(row["task_id"], view_df, df_tasks, df_check, df_comm, df_memb, df_notif, df_links)
 
     with tabs[1]:
         st.markdown("### ▦ Bulk Table Editor")
@@ -1473,7 +1565,7 @@ elif current_page == "▦ Planner":
             "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"], help="Board column for visual organization."),
             "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"], help="Which mission this belongs to."),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS), help="Which subteam is responsible."),
+            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS.keys()), help="Which subteam is responsible."),
             "assigned_to": st.column_config.SelectboxColumn("Assigned To", options=member_opts if member_opts else [""], help="Team member assigned to complete the work."),
             "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
             "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
@@ -1487,88 +1579,8 @@ elif current_page == "▦ Planner":
             save_planner_data(edited_view, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
             update_gantt_links(edited_view, df_links)
             st.rerun()
-
+            
     with tabs[2]:
-        selected_id = st.session_state.get("selected_task_id", None)
-        if selected_id and not view_df.empty and selected_id in view_df["task_id"].values:
-            t_row = view_df[view_df["task_id"] == selected_id].iloc[0]
-            st.subheader(f"◈ {t_row['title']}")
-            
-            det_c1, det_c2 = st.columns([2, 1])
-            with det_c1:
-                st.markdown(f"**Description:** {t_row.get('description', 'No description')}")
-                
-                assignee_name = t_row.get('assigned_to', 'Unassigned')
-                st.markdown(f"**Assigned To:** {assignee_name}")
-                if assignee_name != 'Unassigned' and not df_memb.empty:
-                    mem_info = df_memb[df_memb['member_name'] == assignee_name]
-                    if not mem_info.empty:
-                        m_email = mem_info.iloc[0].get("email", "No email")
-                        m_role = mem_info.iloc[0].get("role", "No role")
-                        st.caption(f"✉ {m_email} | ⚙ {m_role}")
-                        
-                st.markdown(f"**CC:** {t_row.get('cc_people', '')}")
-                st.markdown(f"**Linked Gantt Task:** {t_row.get('linked_gantt_task', 'None')}")
-                if t_row.get('deliverable_link'):
-                    st.markdown(f"[↗ View Deliverable]({t_row['deliverable_link']})")
-                
-                st.markdown("---")
-                st.markdown("#### Checklist")
-                t_check = df_check[df_check["task_id"] == selected_id].copy() if not df_check.empty else pd.DataFrame(columns=PLANNER_CHECKLIST_COLS)
-                if not t_check.empty: t_check["task_id"] = selected_id
-                
-                ed_check = st.data_editor(t_check, num_rows="dynamic", use_container_width=True, key=f"chk_{selected_id}")
-                if st.button("Save Checklist"):
-                    for idx, r in ed_check.iterrows():
-                        if not r.get("checklist_item_id"):
-                            ed_check.at[idx, "checklist_item_id"] = str(uuid.uuid4())
-                        ed_check.at[idx, "task_id"] = selected_id
-                    save_planner_data(ed_check, df_check, PLANNER_CHECKLIST_COLS, "planner_task_checklist", "checklist_item_id")
-                    st.rerun()
-                
-            with det_c2:
-                with st.container(border=True):
-                    st.markdown("**Status & Timeline**")
-                    p_color = priority_color(t_row.get("priority", "Low"))
-                    s_color = status_color(t_row.get("status", "Not Started"))
-                    st.markdown(f"**Priority:** <span style='color:{p_color}'>■ {t_row.get('priority')}</span>", unsafe_allow_html=True)
-                    st.markdown(f"**Status:** <span style='color:{s_color}'>● {t_row.get('status')}</span>", unsafe_allow_html=True)
-                    st.markdown(f"**% Complete:** {t_row.get('percent_complete', 0)}%")
-                    st.markdown(f"**Due Date:** {t_row.get('due_date', '')}")
-                    if str(t_row.get("delay_flag", "False")).lower() == "true":
-                        st.markdown(f"<span style='color:#ef4444'>⚠ Delayed by {t_row.get('delay_days', 0)} days</span>", unsafe_allow_html=True)
-                    
-                    st.markdown("---")
-                    st.markdown("**Actions**")
-                    if st.button("↻ Queue Reminder Email", help="Prepares an email notification for a future send cycle."):
-                        queue_notification(t_row, df_notif)
-                        st.success("Reminder queued.")
-
-            st.markdown("---")
-            st.markdown("#### Comments")
-            t_comm = df_comm[df_comm["task_id"] == selected_id] if not df_comm.empty else pd.DataFrame(columns=PLANNER_COMMENTS_COLS)
-            for _, c in t_comm.iterrows():
-                with st.chat_message("user"):
-                    st.markdown(f"**{c['author']}** ({c['created_at']})")
-                    st.markdown(c['comment'])
-            
-            with st.form("new_comment"):
-                c_text = st.text_area("Add a comment")
-                c_submit = st.form_submit_button("Post Comment")
-                if c_submit and c_text:
-                    new_c = pd.DataFrame([{
-                        "comment_id": str(uuid.uuid4()),
-                        "task_id": selected_id,
-                        "author": "Current PM", 
-                        "comment": c_text,
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }])
-                    save_planner_data(new_c, df_comm, PLANNER_COMMENTS_COLS, "planner_task_comments", "comment_id")
-                    st.rerun()
-        else:
-            st.info("ⓘ Select a task from the Board View to see details.")
-            
-    with tabs[3]:
         st.markdown("### ❖ Team Directory")
         st.markdown("Manage contact info for team members. These names will populate the 'Assigned To' dropdown in task creation.")
         
