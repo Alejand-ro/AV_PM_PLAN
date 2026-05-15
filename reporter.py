@@ -10,6 +10,8 @@ from pathlib import Path
 import gspread
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2 import service_account
 
@@ -61,7 +63,6 @@ def week_range_label(monday_date) -> str:
 def build_week_options(center_monday, weeks_back: int = 12, weeks_forward: int = 8):
     return [center_monday + timedelta(weeks=i) for i in range(-weeks_back, weeks_forward + 1)]
 
-
 # --- GOOGLE SHEETS CONFIGURATION ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -89,26 +90,40 @@ CONTENT_CAL_COLUMNS = [
     "actual_posted_date", "marked_done_at", "notes", "created_at", "updated_at"
 ]
 
+EVENTS_HEADERS = [
+    "event_id", "mission", "cycle", "event_name", "event_type", "planned_date", "actual_date", 
+    "location", "target_audience", "expected_gross_revenue", "expected_expenses", "expected_net_revenue", 
+    "actual_gross_revenue", "actual_expenses", "actual_net_revenue", "status", "owner", "key_contacts", 
+    "venue_confirmed", "permits_needed", "permits_completed", "marketing_ready", "volunteers_ready", 
+    "follow_up_completed", "notes", "created_at", "updated_at"
+]
+
+TRANSACTIONS_HEADERS = [
+    "transaction_id", "event_id", "transaction_date", "mission", "cycle", "event_name", 
+    "source_type", "source_name", "payment_method", "amount", "confirmed", "deposited", 
+    "deposit_date", "notes", "created_at", "updated_at"
+]
+
+EXPENSES_HEADERS = [
+    "expense_id", "event_id", "expense_date", "mission", "cycle", "event_name", "vendor", 
+    "item_description", "category", "amount", "reimbursed", "receipt_available", "notes", 
+    "created_at", "updated_at"
+]
+
+GOALS_HEADERS = [
+    "goal_id", "mission", "cycle", "goal_name", "target_amount", "deadline", "purpose", 
+    "status", "notes", "created_at", "updated_at"
+]
+
 PLATFORM_COLORS = {
-    "No post day": "#ef4444", 
-    "Outreach Activity": "#f97316",
-    "LinkedIn": "#eab308", 
-    "Email": "#22c55e", 
-    "X": "#2dd4bf",
-    "TikTok": "#38bdf8", 
-    "Facebook": "#c084fc", 
-    "YouTube": "#f43f5e",
-    "Instagram": "#d946ef", 
-    "Other": "#94a3b8"
+    "No post day": "#ef4444", "Outreach Activity": "#f97316", "LinkedIn": "#eab308", 
+    "Email": "#22c55e", "X": "#2dd4bf", "TikTok": "#38bdf8", "Facebook": "#c084fc", 
+    "YouTube": "#f43f5e", "Instagram": "#d946ef", "Other": "#94a3b8"
 }
 
 STATUS_SYMBOLS = {
-    "Planned": "◌", 
-    "In Progress": "◐", 
-    "Posted": "●",
-    "Missed": "⚠", 
-    "Cancelled": "×", 
-    "Rescheduled": "↷"
+    "Planned": "◌", "In Progress": "◐", "Posted": "●",
+    "Missed": "⚠", "Cancelled": "×", "Rescheduled": "↷"
 }
 
 DYNAMIC_CYCLES = ["2026-2027", "2027-2028", "2028-2029"]
@@ -128,11 +143,9 @@ def google_sheet_ready() -> tuple[bool, str]:
 def get_spreadsheet():
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Missing [gcp_service_account] in Streamlit Secrets.")
-
     service_info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(service_info, scopes=SCOPES)
     client = gspread.authorize(creds)
-
     sheet_id = st.secrets.get("SHEET_ID", "").strip() if st.secrets.get("SHEET_ID") else ""
     sheet_name = st.secrets.get("SHEET_NAME", "AV PM Reports Database")
     return client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
@@ -328,7 +341,6 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         if col not in df_all.columns:
             df_all[col] = ""
 
-    # Drop existing rows for this specific mission, cycle, and month/year
     if not df_all.empty:
         df_all["temp_dt"] = pd.to_datetime(df_all["planned_date"], errors="coerce")
         mask = (
@@ -339,13 +351,11 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         )
         df_all = df_all[~mask].drop(columns=["temp_dt"])
 
-    # Prepare edited df
     now_str = datetime.utcnow().isoformat() + "Z"
     
     clean_edited = []
     for _, row in df_edited.iterrows():
         r = row.to_dict()
-        # Skip truly blank rows (unless it's a "No post day")
         if not r.get("content_title") and not r.get("description") and r.get("platform") != "No post day":
             continue
             
@@ -358,14 +368,12 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         r["month"] = target_month
         r["updated_at"] = now_str
         
-        # Mark as done logic
         if r.get("status") == "Posted":
             if not r.get("actual_posted_date") or r.get("actual_posted_date") == "NaT":
                 r["actual_posted_date"] = date.today().strftime("%Y-%m-%d")
             if not r.get("marked_done_at"):
                 r["marked_done_at"] = now_str
         else:
-            # If changed back from posted, clear the actual date
             if r.get("actual_posted_date"):
                 r["actual_posted_date"] = ""
             if r.get("marked_done_at"):
@@ -382,11 +390,69 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         
     df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
     
-    # Write full sheet back safely
     data = [headers] + df_all[headers].values.tolist()
     worksheet.clear()
     worksheet.append_rows(data, value_input_option="USER_ENTERED")
 
+# --- FUNDRAISING & FINANCE HELPER FUNCTIONS ---
+@st.cache_data(ttl=60, show_spinner=False)
+def load_finance_sheet(sheet_name: str, headers: list[str], force_refresh=0) -> pd.DataFrame:
+    worksheet = get_or_create_worksheet(sheet_name, headers, rows=1000)
+    records = worksheet.get_all_records()
+    if not records:
+        return pd.DataFrame(columns=headers)
+    df = pd.DataFrame(records)
+    for col in headers:
+        if col not in df.columns:
+            df[col] = ""
+    return df
+
+def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[str], id_col: str, mission: str, cycle: str):
+    worksheet = get_or_create_worksheet(sheet_name, headers, rows=1000)
+    df_all = pd.DataFrame(worksheet.get_all_records())
+    
+    if df_all.empty:
+        df_all = pd.DataFrame(columns=headers)
+    for col in headers:
+        if col not in df_all.columns:
+            df_all[col] = ""
+
+    # Clear existing rows for this mission and cycle
+    if not df_all.empty:
+        mask = (df_all["mission"] == mission) & (df_all["cycle"] == cycle)
+        df_all = df_all[~mask]
+
+    now_str = datetime.utcnow().isoformat() + "Z"
+    clean_edited = []
+    
+    for _, row in df_edited.iterrows():
+        r = row.to_dict()
+        
+        # Skip completely blank lines 
+        if not str(r.get(id_col, "")) and not str(r.get("event_name", "")) and not str(r.get("amount", "")) and not str(r.get("goal_name", "")):
+            continue
+            
+        if not str(r.get(id_col, "")):
+            r[id_col] = f"{mission}_{cycle}_{uuid.uuid4().hex[:8]}"
+            r["created_at"] = now_str
+            
+        r["mission"] = mission
+        r["cycle"] = cycle
+        r["updated_at"] = now_str
+        clean_edited.append(r)
+        
+    df_new = pd.DataFrame(clean_edited)
+    if not df_new.empty:
+        for col in headers:
+            if col not in df_new.columns:
+                df_new[col] = ""
+        df_all = pd.concat([df_all, df_new], ignore_index=True)
+        
+    df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>", "False"], "")
+    
+    data = [headers] + df_all[headers].values.tolist()
+    worksheet.clear()
+    worksheet.append_rows(data, value_input_option="USER_ENTERED")
 
 # -----------------------------------------------------------------------------
 # EARLY STATE INITIALIZATION (Allows theme & filter updates without double reload)
@@ -635,16 +701,39 @@ st.markdown(
         text-overflow: ellipsis;
         white-space: nowrap;
     }}
+    
+    .kpi {{ 
+        padding: 24px; 
+        border-radius: 16px; 
+        background: rgba(255,255,255,0.03); 
+        border: 1px solid var(--line); 
+        margin-bottom: 24px;
+    }}
+    .kpi-label {{ color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }}
+    .kpi-value {{ color:#ffffff; font-size:36px; font-weight:950; letter-spacing:-.06em; margin-top:8px; }}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
+def plotly_theme(fig: go.Figure) -> go.Figure:
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#f8fafc"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(255,255,255,.10)", borderwidth=1),
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    fig.update_xaxes(gridcolor="rgba(255,255,255,.05)", zerolinecolor="rgba(255,255,255,.10)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,.05)", zerolinecolor="rgba(255,255,255,.10)")
+    return fig
+
 # -----------------------------------------------------------------------------
 # SIDEBAR NAVIGATION
 # -----------------------------------------------------------------------------
 st.sidebar.header("⌖ Navigation")
-current_page = st.sidebar.radio("Go to", ["▦ Weekly Performance Report", "◫ Content Calendar"])
+current_page = st.sidebar.radio("Go to", ["▦ Weekly Performance Report", "◫ Content Calendar", "$ Fundraising & Finance"])
 
 if current_page == "▦ Weekly Performance Report":
     # -----------------------------------------------------------------------------
@@ -676,7 +765,7 @@ if current_page == "▦ Weekly Performance Report":
     st.markdown(f'<div class="glass"><b>Official Division Legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="glass" style="padding: 20px 28px;">', unsafe_allow_html=True)
-    st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 18px;'>🎯 Target Competition Program</h4>", unsafe_allow_html=True)
+    st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 18px;'>◈ Target Competition Program</h4>", unsafe_allow_html=True)
     st.radio(
         "Competition Program",
         options=["Mars Mission", "Luna Mission"],
@@ -984,6 +1073,33 @@ elif current_page == "◫ Content Calendar":
     # -----------------------------------------------------------------------------
     # PAGE: CONTENT CALENDAR
     # -----------------------------------------------------------------------------
+    if "cc_pm_month" not in st.session_state:
+        st.session_state.cc_pm_month = calendar.month_name[date.today().month]
+    if "cc_pm_year" not in st.session_state:
+        st.session_state.cc_pm_year = date.today().year
+
+    def cc_prev_month():
+        m_idx = MONTHS_LIST.index(st.session_state.cc_pm_month) + 1
+        y = int(st.session_state.cc_pm_year)
+        if m_idx == 1:
+            m_idx = 12
+            y -= 1
+        else:
+            m_idx -= 1
+        st.session_state.cc_pm_month = calendar.month_name[m_idx]
+        st.session_state.cc_pm_year = y
+
+    def cc_next_month():
+        m_idx = MONTHS_LIST.index(st.session_state.cc_pm_month) + 1
+        y = int(st.session_state.cc_pm_year)
+        if m_idx == 12:
+            m_idx = 1
+            y += 1
+        else:
+            m_idx += 1
+        st.session_state.cc_pm_month = calendar.month_name[m_idx]
+        st.session_state.cc_pm_year = y
+
     st.markdown(
         f"""
         <div class="hero">
@@ -1009,12 +1125,11 @@ elif current_page == "◫ Content Calendar":
     cal_mission = c1.selectbox("Mission", ["Mars", "Luna", "General"])
     cal_cycle = c2.selectbox("Cycle", DYNAMIC_CYCLES, index=1)
     
-    current_month_index = date.today().month - 1
-    cal_month = c3.selectbox("Month", MONTHS_LIST, index=current_month_index)
+    cal_month = c3.selectbox("Month", MONTHS_LIST, key="cc_pm_month")
     
     current_year = date.today().year
     year_options = [current_year - 1, current_year, current_year + 1, current_year + 2]
-    cal_year = c4.selectbox("Year", year_options, index=1)
+    cal_year = c4.selectbox("Year", year_options, key="cc_pm_year")
     st.markdown('</div>', unsafe_allow_html=True)
     
     if st.button("↻ Refresh from Google Sheets"):
@@ -1022,7 +1137,6 @@ elif current_page == "◫ Content Calendar":
         
     full_cal_df = load_content_calendar()
     
-    # Filter for the active calendar view
     if not full_cal_df.empty:
         full_cal_df["temp_dt"] = pd.to_datetime(full_cal_df["planned_date"], errors="coerce")
         month_idx = MONTHS_LIST.index(cal_month) + 1
@@ -1044,7 +1158,6 @@ elif current_page == "◫ Content Calendar":
     missed = len(active_df[active_df["status"] == "Missed"])
     pending = len(active_df[active_df["status"].isin(["Planned", "In Progress", "Rescheduled"])])
     
-    # Calculate Late (if posted but after planned date)
     late_count = 0
     if not active_df.empty:
         posted_df = active_df[active_df["status"] == "Posted"]
@@ -1062,7 +1175,13 @@ elif current_page == "◫ Content Calendar":
     st.divider()
     
     # --- VISUAL MONTHLY CALENDAR ---
-    st.markdown(f"### ◫ {cal_month} {cal_year}")
+    c_prev, c_title, c_next = st.columns([1, 6, 1])
+    with c_prev:
+        st.button("◀ Prev", on_click=cc_prev_month, use_container_width=True)
+    with c_title:
+        st.markdown(f"<h3 style='text-align:center; margin-top:0;'>◫ {cal_month} {cal_year}</h3>", unsafe_allow_html=True)
+    with c_next:
+        st.button("Next ▶", on_click=cc_next_month, use_container_width=True)
     
     month_idx = MONTHS_LIST.index(cal_month) + 1
     cal = calendar.monthcalendar(cal_year, month_idx)
@@ -1103,24 +1222,21 @@ elif current_page == "◫ Content Calendar":
 
     # --- CONTENT EDITOR ---
     st.markdown("### ▦ Content Editor")
-    st.markdown('<div class="chart-desc">ⓘ Edit rows directly. To add a new event, scroll to the bottom and click the empty row (or use the plus icon). Marking an item as "Posted" will automatically timestamp the execution.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="chart-desc">ⓘ Edit rows directly. To add a new event, scroll to the bottom and click the empty row. Marking an item as "Posted" will automatically timestamp the execution.</div>', unsafe_allow_html=True)
     
     edit_cols = ["content_id", "planned_date", "platform", "content_title", "description", "content_type", "owner", "status", "actual_posted_date", "notes"]
-    
     display_df = active_df[edit_cols].copy()
     
-    # Pad with 3 blank rows always so users can quickly click and type to add
     blank_rows = []
     for _ in range(3):
         blank_rows.append({"status": "Planned", "platform": "Instagram"})
     display_df = pd.concat([display_df, pd.DataFrame(blank_rows)], ignore_index=True)
     
-    # Safely convert to proper datetime.date objects for the DateColumn to prevent type crash
     display_df["planned_date"] = pd.to_datetime(display_df["planned_date"], errors="coerce").dt.date
     display_df["actual_posted_date"] = pd.to_datetime(display_df["actual_posted_date"], errors="coerce").dt.date
     
     config = {
-        "content_id": None, # Hides the ID safely while preserving the connection
+        "content_id": None, 
         "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD"),
         "platform": st.column_config.SelectboxColumn("Platform", options=list(PLATFORM_COLORS.keys())),
         "status": st.column_config.SelectboxColumn("Status", options=list(STATUS_SYMBOLS.keys())),
@@ -1130,20 +1246,16 @@ elif current_page == "◫ Content Calendar":
     edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500, column_config=config)
     
     if st.button("☑ Save Content Calendar", type="primary"):
-        # We build the final save from the user's edited view
         final_save_df = edited_view.copy()
         
-        # Merge the hidden metadata (created_at, marked_done_at) back onto the rows that already existed
         meta_cols = ["content_id", "marked_done_at", "created_at"]
         if not active_df.empty:
             meta_df = active_df[meta_cols].dropna(subset=["content_id"])
             final_save_df = pd.merge(final_save_df, meta_df, on="content_id", how="left")
             
-        # Convert true datetime objects safely back to strings for Google Sheets
         final_save_df["planned_date"] = pd.to_datetime(final_save_df["planned_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
         final_save_df["actual_posted_date"] = pd.to_datetime(final_save_df["actual_posted_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
         
-        # Ensure remaining structural columns exist
         for c in CONTENT_CAL_COLUMNS:
             if c not in final_save_df.columns:
                 final_save_df[c] = ""
@@ -1152,3 +1264,481 @@ elif current_page == "◫ Content Calendar":
         st.success(f"ⓘ Successfully saved Content Calendar for {cal_mission} ({cal_month} {cal_year}).")
         load_content_calendar.clear()
         st.rerun()
+
+
+elif current_page == "$ Fundraising & Finance":
+    # -----------------------------------------------------------------------------
+    # PAGE: FUNDRAISING & FINANCE
+    # -----------------------------------------------------------------------------
+    
+    @st.cache_data(ttl=60, show_spinner=False)
+    def load_finance_sheet(sheet_name: str, headers: list[str]) -> pd.DataFrame:
+        worksheet = get_or_create_worksheet(sheet_name, headers, rows=1000)
+        records = worksheet.get_all_records()
+        if not records:
+            return pd.DataFrame(columns=headers)
+        df = pd.DataFrame(records)
+        for col in headers:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+
+    def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[str], id_col: str, mission: str, cycle: str):
+        worksheet = get_or_create_worksheet(sheet_name, headers, rows=1000)
+        df_all = pd.DataFrame(worksheet.get_all_records())
+        if df_all.empty:
+            df_all = pd.DataFrame(columns=headers)
+            
+        if not df_all.empty and "mission" in df_all.columns and "cycle" in df_all.columns:
+            mask = (df_all["mission"] == mission) & (df_all["cycle"] == cycle)
+            df_all = df_all[~mask]
+            
+        now_str = datetime.utcnow().isoformat() + "Z"
+        
+        clean_edited = []
+        for _, row in df_edited.iterrows():
+            r = row.to_dict()
+            
+            if not str(r.get(id_col, "")) and not str(r.get("event_name", "")) and not str(r.get("amount", "")) and not str(r.get("goal_name", "")):
+                continue
+                
+            if not str(r.get(id_col, "")):
+                r[id_col] = f"{mission}_{cycle}_{uuid.uuid4().hex[:8]}"
+                r["created_at"] = now_str
+                
+            r["mission"] = mission
+            r["cycle"] = cycle
+            r["updated_at"] = now_str
+            clean_edited.append(r)
+            
+        df_new = pd.DataFrame(clean_edited)
+        if not df_new.empty:
+            for col in headers:
+                if col not in df_new.columns:
+                    df_new[col] = ""
+            df_all = pd.concat([df_all, df_new], ignore_index=True)
+            
+        df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>", "False"], "")
+        
+        data = [headers] + df_all[headers].values.tolist()
+        worksheet.clear()
+        worksheet.append_rows(data, value_input_option="USER_ENTERED")
+
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero-content">
+            <div class="av-logo-container">
+                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                <div>
+                    <div class="eyebrow">Project AV • Financial Administration</div>
+                    <div class="title">Fundraising & Finance</div>
+                </div>
+            </div>
+            <div class="subtitle" style="margin-top: 10px;">
+              Plan fundraising activities, record revenue and expenses, and track financial performance across Project AV.
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
+    f1, f2, f3, f4 = st.columns(4)
+    fin_mission = f1.selectbox("Mission Filter", ["Mars", "Luna", "General"])
+    fin_cycle = f2.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
+    
+    current_month_index = date.today().month - 1
+    fin_month = f3.selectbox("Month Filter", MONTHS_LIST, index=current_month_index, key="fin_month")
+    
+    current_year = date.today().year
+    fin_year = f4.selectbox("Year Filter", [current_year - 1, current_year, current_year + 1, current_year + 2], index=1, key="fin_year")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.button("↻ Refresh Finance Data"):
+        load_finance_sheet.clear()
+        
+    events_raw = load_finance_sheet("fundraising_events", EVENTS_HEADERS)
+    trans_raw = load_finance_sheet("fundraising_transactions", TRANSACTIONS_HEADERS)
+    exp_raw = load_finance_sheet("fundraising_expenses", EXPENSES_HEADERS)
+    goals_raw = load_finance_sheet("fundraising_goals", GOALS_HEADERS)
+    
+    events_df = events_raw[(events_raw["mission"] == fin_mission) & (events_raw["cycle"] == fin_cycle)].copy() if not events_raw.empty else pd.DataFrame(columns=EVENTS_HEADERS)
+    trans_df = trans_raw[(trans_raw["mission"] == fin_mission) & (trans_raw["cycle"] == fin_cycle)].copy() if not trans_raw.empty else pd.DataFrame(columns=TRANSACTIONS_HEADERS)
+    exp_df = exp_raw[(exp_raw["mission"] == fin_mission) & (exp_raw["cycle"] == fin_cycle)].copy() if not exp_raw.empty else pd.DataFrame(columns=EXPENSES_HEADERS)
+    goals_df = goals_raw[(goals_raw["mission"] == fin_mission) & (goals_raw["cycle"] == fin_cycle)].copy() if not goals_raw.empty else pd.DataFrame(columns=GOALS_HEADERS)
+
+    # Autocalculate Actuals logic
+    if not trans_df.empty:
+        trans_df["amount"] = pd.to_numeric(trans_df["amount"], errors="coerce").fillna(0)
+        trans_sums = trans_df.groupby("event_id")["amount"].sum()
+    else:
+        trans_sums = pd.Series()
+        
+    if not exp_df.empty:
+        exp_df["amount"] = pd.to_numeric(exp_df["amount"], errors="coerce").fillna(0)
+        exp_sums = exp_df.groupby("event_id")["amount"].sum()
+    else:
+        exp_sums = pd.Series()
+
+    if not events_df.empty:
+        for idx, row in events_df.iterrows():
+            eid = row.get("event_id")
+            g = trans_sums.get(eid, 0.0)
+            e = exp_sums.get(eid, 0.0)
+            
+            events_df.at[idx, "actual_gross_revenue"] = g
+            events_df.at[idx, "actual_expenses"] = e
+            events_df.at[idx, "actual_net_revenue"] = g - e
+            
+            exp_g = float(row.get("expected_gross_revenue") or 0)
+            exp_e = float(row.get("expected_expenses") or 0)
+            events_df.at[idx, "expected_net_revenue"] = exp_g - exp_e
+
+    # Build dropdown options
+    event_options = []
+    if not events_df.empty:
+        for _, row in events_df.iterrows():
+            if str(row.get("event_name", "")).strip():
+                event_options.append(str(row["event_name"]))
+    if not event_options:
+        event_options = ["None"]
+
+    tab_cal, tab_evt, tab_txn, tab_exp, tab_goal, tab_analytics = st.tabs([
+        "◫ Calendar Preview", "◈ Events", "▦ Transactions", "▦ Expenses", "⊙ Goals", "⌁ Analytics"
+    ])
+
+    with tab_cal:
+        st.markdown(f"### ◫ {fin_month} {fin_year}")
+        month_idx = MONTHS_LIST.index(fin_month) + 1
+        cal_grid = calendar.monthcalendar(fin_year, month_idx)
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        
+        cols = st.columns(7)
+        for i, d_name in enumerate(day_names):
+            cols[i].markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:800; font-size:14px; margin-bottom:8px;'>{d_name}</div>", unsafe_allow_html=True)
+            
+        for week in cal_grid:
+            cols = st.columns(7)
+            for i, day in enumerate(week):
+                if day == 0:
+                    cols[i].markdown("<div class='cal-day empty'></div>", unsafe_allow_html=True)
+                else:
+                    date_str = f"{fin_year}-{month_idx:02d}-{day:02d}"
+                    content_html = ""
+                    
+                    if not events_df.empty:
+                        day_items = events_df[events_df["planned_date"] == date_str]
+                        for _, item in day_items.iterrows():
+                            title = item.get("event_name", "Unnamed Event")
+                            status = item.get("status", "Planned")
+                            ex_net = float(item.get("expected_net_revenue") or 0)
+                            ac_net = float(item.get("actual_net_revenue") or 0)
+                            
+                            if status == "Completed":
+                                badge_text = f"{title} (${ac_net:,.0f} net)"
+                                bg_color = "#22c55e" # green
+                            else:
+                                badge_text = f"{title} (Est: ${ex_net:,.0f})"
+                                bg_color = "#3b82f6" # blue
+                                
+                            content_html += f"<div class='cal-badge' style='background:{bg_color}; color:#fff;' title='{status}'>{badge_text}</div>"
+                    
+                    cols[i].markdown(f"""
+                    <div class='cal-day'>
+                        <div class='cal-date'>{day}</div>
+                        {content_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+        st.divider()
+
+    with tab_evt:
+        st.markdown("### ◈ Event Management")
+        st.markdown('<div class="chart-desc">ⓘ Create and manage fundraising initiatives. Net revenues will auto-calculate based on saved transactions and expenses.</div>', unsafe_allow_html=True)
+        
+        evt_cols = ["event_id", "event_name", "event_type", "planned_date", "actual_date", "location", "status", "expected_gross_revenue", "expected_expenses", "venue_confirmed", "permits_completed", "marketing_ready", "volunteers_ready"]
+        evt_view = events_df[evt_cols].copy() if not events_df.empty else pd.DataFrame(columns=evt_cols)
+        
+        pad = []
+        for _ in range(3): pad.append({"status": "Planned", "event_type": "Other", "expected_gross_revenue": 0, "expected_expenses": 0})
+        evt_view = pd.concat([evt_view, pd.DataFrame(pad)], ignore_index=True)
+        
+        evt_view["planned_date"] = pd.to_datetime(evt_view["planned_date"], errors="coerce").dt.date
+        evt_view["actual_date"] = pd.to_datetime(evt_view["actual_date"], errors="coerce").dt.date
+        
+        config = {
+            "event_id": None, 
+            "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD"),
+            "actual_date": st.column_config.DateColumn("Actual Date", format="YYYY-MM-DD"),
+            "event_type": st.column_config.SelectboxColumn("Type", options=["Food Sale", "Raffle", "Sponsorship", "Donation", "Venue Fundraiser", "Online Campaign", "Community Event", "Other"]),
+            "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Completed", "Cancelled", "Delayed", "Needs Follow-Up"]),
+            "expected_gross_revenue": st.column_config.NumberColumn("Exp. Revenue $"),
+            "expected_expenses": st.column_config.NumberColumn("Exp. Cost $"),
+            "venue_confirmed": st.column_config.CheckboxColumn("Venue"),
+            "permits_completed": st.column_config.CheckboxColumn("Permits"),
+            "marketing_ready": st.column_config.CheckboxColumn("Marketing"),
+            "volunteers_ready": st.column_config.CheckboxColumn("Vols"),
+        }
+        
+        edited_evt = st.data_editor(evt_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
+        
+        if st.button("☑ Save Events", type="primary"):
+            final = edited_evt.copy()
+            meta_cols = ["event_id", "created_at", "actual_gross_revenue", "actual_expenses", "actual_net_revenue", "expected_net_revenue"]
+            if not events_df.empty:
+                meta = events_df[[c for c in meta_cols if c in events_df.columns]].dropna(subset=["event_id"])
+                final = pd.merge(final, meta, on="event_id", how="left")
+            
+            final["planned_date"] = pd.to_datetime(final["planned_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            final["actual_date"] = pd.to_datetime(final["actual_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            save_finance_sheet("fundraising_events", final, EVENTS_HEADERS, "event_id", fin_mission, fin_cycle)
+            st.success("ⓘ Events saved.")
+            load_finance_sheet.clear()
+            st.rerun()
+
+    with tab_txn:
+        st.markdown("### ▦ Income Transactions")
+        st.markdown('<div class="chart-desc">ⓘ Record all money received. These values will automatically aggregate to calculate Event Gross Revenue.</div>', unsafe_allow_html=True)
+        
+        txn_cols = ["transaction_id", "event_name", "transaction_date", "source_type", "source_name", "payment_method", "amount", "deposited"]
+        txn_view = trans_df[txn_cols].copy() if not trans_df.empty else pd.DataFrame(columns=txn_cols)
+        
+        pad = []
+        for _ in range(3): pad.append({"source_type": "Other", "payment_method": "Cash", "amount": 0})
+        txn_view = pd.concat([txn_view, pd.DataFrame(pad)], ignore_index=True)
+        txn_view["transaction_date"] = pd.to_datetime(txn_view["transaction_date"], errors="coerce").dt.date
+        
+        config = {
+            "transaction_id": None, 
+            "transaction_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+            "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options),
+            "source_type": st.column_config.SelectboxColumn("Source", options=["Individual", "Sponsor", "Ticket Sale", "Raffle Sale", "Food Sale", "Online Donation", "Cash Donation", "Other"]),
+            "payment_method": st.column_config.SelectboxColumn("Method", options=["ATH Movil", "Cash", "PayPal", "Check", "Bank Transfer", "Card", "Other"]),
+            "amount": st.column_config.NumberColumn("Amount $"),
+            "deposited": st.column_config.CheckboxColumn("Deposited?"),
+        }
+        
+        edited_txn = st.data_editor(txn_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
+        
+        if st.button("☑ Save Transactions", type="primary"):
+            final = edited_txn.copy()
+            meta_cols = ["transaction_id", "created_at"]
+            if not trans_df.empty:
+                meta = trans_df[[c for c in meta_cols if c in trans_df.columns]].dropna(subset=["transaction_id"])
+                final = pd.merge(final, meta, on="transaction_id", how="left")
+            
+            # Map event_name back to event_id
+            name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
+            final["event_id"] = final["event_name"].map(name_to_id).fillna("")
+            
+            final["transaction_date"] = pd.to_datetime(final["transaction_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            save_finance_sheet("fundraising_transactions", final, TRANSACTIONS_HEADERS, "transaction_id", fin_mission, fin_cycle)
+            st.success("ⓘ Transactions saved.")
+            load_finance_sheet.clear()
+            st.rerun()
+
+    with tab_exp:
+        st.markdown("### ▦ Expenses")
+        st.markdown('<div class="chart-desc">ⓘ Record all money spent. These values will automatically aggregate to calculate Event Net Revenue.</div>', unsafe_allow_html=True)
+        
+        exp_cols = ["expense_id", "event_name", "expense_date", "vendor", "item_description", "category", "amount", "reimbursed"]
+        exp_view = exp_df[exp_cols].copy() if not exp_df.empty else pd.DataFrame(columns=exp_cols)
+        
+        pad = []
+        for _ in range(3): pad.append({"category": "Other", "amount": 0})
+        exp_view = pd.concat([exp_view, pd.DataFrame(pad)], ignore_index=True)
+        exp_view["expense_date"] = pd.to_datetime(exp_view["expense_date"], errors="coerce").dt.date
+        
+        config = {
+            "expense_id": None, 
+            "expense_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+            "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options),
+            "category": st.column_config.SelectboxColumn("Category", options=["Food / Materials", "Venue", "Marketing", "Equipment", "Transportation", "Permit", "Prize", "Supplies", "Other"]),
+            "amount": st.column_config.NumberColumn("Amount $"),
+            "reimbursed": st.column_config.CheckboxColumn("Reimbursed?"),
+        }
+        
+        edited_exp = st.data_editor(exp_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
+        
+        if st.button("☑ Save Expenses", type="primary"):
+            final = edited_exp.copy()
+            meta_cols = ["expense_id", "created_at"]
+            if not exp_df.empty:
+                meta = exp_df[[c for c in meta_cols if c in exp_df.columns]].dropna(subset=["expense_id"])
+                final = pd.merge(final, meta, on="expense_id", how="left")
+                
+            name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
+            final["event_id"] = final["event_name"].map(name_to_id).fillna("")
+            
+            final["expense_date"] = pd.to_datetime(final["expense_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            save_finance_sheet("fundraising_expenses", final, EXPENSES_HEADERS, "expense_id", fin_mission, fin_cycle)
+            st.success("ⓘ Expenses saved.")
+            load_finance_sheet.clear()
+            st.rerun()
+
+    with tab_goal:
+        st.markdown("### ⊙ Organizational Goals")
+        st.markdown('<div class="chart-desc">ⓘ Set macro financial targets to measure total fundraising success against.</div>', unsafe_allow_html=True)
+        
+        goal_cols = ["goal_id", "goal_name", "target_amount", "deadline", "purpose", "status"]
+        goal_view = goals_df[goal_cols].copy() if not goals_df.empty else pd.DataFrame(columns=goal_cols)
+        
+        pad = []
+        for _ in range(1): pad.append({"status": "In Progress", "target_amount": 0})
+        goal_view = pd.concat([goal_view, pd.DataFrame(pad)], ignore_index=True)
+        goal_view["deadline"] = pd.to_datetime(goal_view["deadline"], errors="coerce").dt.date
+        
+        config = {
+            "goal_id": None, 
+            "deadline": st.column_config.DateColumn("Deadline", format="YYYY-MM-DD"),
+            "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Achieved", "Missed"]),
+            "target_amount": st.column_config.NumberColumn("Target $"),
+        }
+        
+        edited_goal = st.data_editor(goal_view, num_rows="dynamic", use_container_width=True, height=250, column_config=config)
+        
+        if st.button("☑ Save Goals", type="primary"):
+            final = edited_goal.copy()
+            meta_cols = ["goal_id", "created_at"]
+            if not goals_df.empty:
+                meta = goals_df[[c for c in meta_cols if c in goals_df.columns]].dropna(subset=["goal_id"])
+                final = pd.merge(final, meta, on="goal_id", how="left")
+                
+            final["deadline"] = pd.to_datetime(final["deadline"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            save_finance_sheet("fundraising_goals", final, GOALS_HEADERS, "goal_id", fin_mission, fin_cycle)
+            st.success("ⓘ Goals saved.")
+            load_finance_sheet.clear()
+            st.rerun()
+
+    with tab_analytics:
+        st.markdown("### ⌁ Financial Analytics Dashboard")
+        
+        t_gross = events_df["actual_gross_revenue"].sum() if not events_df.empty else 0.0
+        t_exp = events_df["actual_expenses"].sum() if not events_df.empty else 0.0
+        t_net = t_gross - t_exp
+        
+        t_goal = 0.0
+        if not goals_df.empty:
+            goals_df["target_amount"] = pd.to_numeric(goals_df["target_amount"], errors="coerce").fillna(0)
+            t_goal = goals_df["target_amount"].sum()
+            
+        progress_pct = (t_net / t_goal * 100) if t_goal > 0 else 0.0
+        remaining = max(0, t_goal - t_net)
+        
+        best_event = "—"
+        worst_event = "—"
+        if not events_df.empty and t_gross > 0:
+            best_event = events_df.loc[events_df["actual_net_revenue"].idxmax()]["event_name"]
+            worst_event = events_df.loc[events_df["actual_expenses"].idxmax()]["event_name"]
+            
+        cost_per_dlr = (t_exp / t_gross) if t_gross > 0 else 0.0
+        roi = (t_gross / t_exp * 100) if t_exp > 0 else 0.0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Gross Revenue", f"${t_gross:,.2f}")
+        m2.metric("Total Expenses", f"${t_exp:,.2f}")
+        m3.metric("Total Net Revenue", f"${t_net:,.2f}")
+        m4.metric("Goal Progress", f"{progress_pct:.1f}%")
+        
+        m5, m6, m7, m8 = st.columns(4)
+        m5.metric("Remaining to Goal", f"${remaining:,.2f}")
+        m6.metric("Best Event (Net)", best_event)
+        m7.metric("Cost per $1 Raised", f"${cost_per_dlr:.2f}")
+        m8.metric("ROI", f"{roi:.0f}%" if t_exp > 0 else "—")
+        
+        st.divider()
+        
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Goal Progress")
+            fig_g = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = t_net,
+                title = {'text': "Net Revenue vs Target"},
+                gauge = {
+                    'axis': {'range': [0, max(t_goal, t_net, 1)]},
+                    'bar': {'color': "#22c55e"},
+                    'steps': [{'range': [0, t_goal], 'color': "rgba(255,255,255,0.1)"}],
+                    'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': t_goal}
+                }
+            ))
+            fig_g.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+            st.plotly_chart(fig_g, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with c2:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Planned vs Actual Net by Event")
+            if not events_df.empty:
+                comp_df = events_df[["event_name", "expected_net_revenue", "actual_net_revenue"]].dropna(subset=["event_name"])
+                fig_comp = go.Figure()
+                fig_comp.add_trace(go.Bar(x=comp_df["event_name"], y=comp_df["expected_net_revenue"], name="Expected", marker_color="rgba(255,255,255,0.2)"))
+                fig_comp.add_trace(go.Bar(x=comp_df["event_name"], y=comp_df["actual_net_revenue"], name="Actual", marker_color=primary))
+                fig_comp.update_layout(barmode='group', height=300, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.info("ⓘ No events to display.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        c3, c4 = st.columns([1, 1])
+        with c3:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Revenue by Payment Method")
+            if not trans_df.empty:
+                pm_df = trans_df.groupby("payment_method")["amount"].sum().reset_index()
+                fig_pm = px.pie(pm_df, values="amount", names="payment_method", hole=0.4)
+                fig_pm.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_pm, use_container_width=True)
+            else:
+                st.info("ⓘ No transactions to display.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        with c4:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Event Status Breakdown")
+            if not events_df.empty:
+                st_df = events_df["status"].value_counts().reset_index()
+                st_df.columns = ["status", "count"]
+                fig_st = px.bar(st_df, x="status", y="count", color="status")
+                fig_st.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False, font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_st, use_container_width=True)
+            else:
+                st.info("ⓘ No events to display.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown("##### ◈ Fundraiser Report Card")
+        sel_evt = st.selectbox("Select Event to View", options=event_options)
+        if sel_evt != "None" and not events_df.empty:
+            evt_row = events_df[events_df["event_name"] == sel_evt].iloc[0]
+            
+            p_date = evt_row.get("planned_date", "—")
+            a_date = evt_row.get("actual_date", "—")
+            e_net = float(evt_row.get("expected_net_revenue") or 0)
+            a_gross = float(evt_row.get("actual_gross_revenue") or 0)
+            a_exp = float(evt_row.get("actual_expenses") or 0)
+            a_net = float(evt_row.get("actual_net_revenue") or 0)
+            diff = a_net - e_net
+            
+            summary_txt = f"**{sel_evt}** generated **${a_gross:,.2f}** in gross revenue, spent **${a_exp:,.2f}** in expenses, and produced **${a_net:,.2f}** in net profit. "
+            if diff >= 0:
+                summary_txt += f"This beat the expected net profit by **${diff:,.2f}**."
+            else:
+                summary_txt += f"This fell short of the expected net profit by **${abs(diff):,.2f}**."
+                
+            st.info(summary_txt)
+            
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Actual Gross", f"${a_gross:,.2f}")
+            r2.metric("Actual Expenses", f"${a_exp:,.2f}")
+            r3.metric("Actual Net Profit", f"${a_net:,.2f}")
+            r4.metric("Variance to Plan", f"${diff:,.2f}")
+            
+            st.markdown("**Operational Checklist:**")
+            v_conf = "☑" if str(evt_row.get("venue_confirmed")).lower() == "true" else "☐"
+            p_comp = "☑" if str(evt_row.get("permits_completed")).lower() == "true" else "☐"
+            m_read = "☑" if str(evt_row.get("marketing_ready")).lower() == "true" else "☐"
+            v_read = "☑" if str(evt_row.get("volunteers_ready")).lower() == "true" else "☐"
+            st.markdown(f"{v_conf} Venue | {p_comp} Permits | {m_read} Marketing | {v_read} Volunteers")
+        st.markdown('</div>', unsafe_allow_html=True)
