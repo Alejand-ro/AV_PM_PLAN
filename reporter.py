@@ -314,7 +314,6 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
         worksheet.append_rows(values, value_input_option="USER_ENTERED")
     return len(values), deleted
 
-
 # --- CONTENT CALENDAR HELPER FUNCTIONS ---
 @st.cache_data(ttl=60, show_spinner=False)
 def load_content_calendar(force_refresh=0) -> pd.DataFrame:
@@ -341,6 +340,7 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         if col not in df_all.columns:
             df_all[col] = ""
 
+    # Drop existing rows for this specific mission, cycle, and month/year
     if not df_all.empty:
         df_all["temp_dt"] = pd.to_datetime(df_all["planned_date"], errors="coerce")
         mask = (
@@ -351,11 +351,13 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         )
         df_all = df_all[~mask].drop(columns=["temp_dt"])
 
+    # Prepare edited df
     now_str = datetime.utcnow().isoformat() + "Z"
     
     clean_edited = []
     for _, row in df_edited.iterrows():
         r = row.to_dict()
+        # Skip truly blank rows (unless it's a "No post day")
         if not r.get("content_title") and not r.get("description") and r.get("platform") != "No post day":
             continue
             
@@ -368,12 +370,14 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         r["month"] = target_month
         r["updated_at"] = now_str
         
+        # Mark as done logic
         if r.get("status") == "Posted":
             if not r.get("actual_posted_date") or r.get("actual_posted_date") == "NaT":
                 r["actual_posted_date"] = date.today().strftime("%Y-%m-%d")
             if not r.get("marked_done_at"):
                 r["marked_done_at"] = now_str
         else:
+            # If changed back from posted, clear the actual date
             if r.get("actual_posted_date"):
                 r["actual_posted_date"] = ""
             if r.get("marked_done_at"):
@@ -390,13 +394,14 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         
     df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
     
+    # Write full sheet back safely
     data = [headers] + df_all[headers].values.tolist()
     worksheet.clear()
     worksheet.append_rows(data, value_input_option="USER_ENTERED")
 
 # --- FUNDRAISING & FINANCE HELPER FUNCTIONS ---
 @st.cache_data(ttl=60, show_spinner=False)
-def load_finance_sheet(sheet_name: str, headers: list[str], force_refresh=0) -> pd.DataFrame:
+def load_finance_sheet(sheet_name: str, headers: list[str]) -> pd.DataFrame:
     worksheet = get_or_create_worksheet(sheet_name, headers, rows=1000)
     records = worksheet.get_all_records()
     if not records:
@@ -418,7 +423,7 @@ def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[s
             df_all[col] = ""
 
     # Clear existing rows for this mission and cycle
-    if not df_all.empty:
+    if not df_all.empty and "mission" in df_all.columns and "cycle" in df_all.columns:
         mask = (df_all["mission"] == mission) & (df_all["cycle"] == cycle)
         df_all = df_all[~mask]
 
@@ -862,19 +867,19 @@ if current_page == "▦ Weekly Performance Report":
 
     col_config_base = {
         "member_name": st.column_config.TextColumn("Member Name", help="Required for row to count"),
-        "role": st.column_config.TextColumn("Role / Subteam"),
-        "tasks_assigned": st.column_config.NumberColumn("Tasks Assigned", min_value=0, step=1),
-        "hours_invested": st.column_config.NumberColumn("Hours Logged", min_value=0, step=1, help="Estimated time spent this week"),
-        "tasks_completed": st.column_config.NumberColumn("Tasks Completed", min_value=0, step=1),
-        "tasks_on_time": st.column_config.NumberColumn("Completed On Time", min_value=0, step=1),
-        "tasks_late": st.column_config.NumberColumn("Completed Late", min_value=0, step=1),
-        "blocked_tasks": st.column_config.NumberColumn("Blocked Tasks", min_value=0, step=1),
-        "avg_quality_1_to_5": st.column_config.NumberColumn("Quality Avg (1-5)", min_value=0.0, max_value=5.0, step=0.1),
-        "meetings_required": st.column_config.NumberColumn("Meetings Required", min_value=0, step=1),
-        "meetings_attended": st.column_config.NumberColumn("Meetings Attended", min_value=0, step=1),
-        "pm_confidence_1_to_5": st.column_config.NumberColumn("PM Confidence (1-5)", min_value=1.0, max_value=5.0, step=0.5),
-        "communication_score": st.column_config.NumberColumn("Comm Score (1-5)", min_value=0.0, max_value=5.0, step=0.5, help="Responsiveness, clarity, and teamwork"),
-        "notes": st.column_config.TextColumn("Notes / Blockers"),
+        "role": st.column_config.TextColumn("Role / Subteam", help="What subteam or functional role does this member have?"),
+        "tasks_assigned": st.column_config.NumberColumn("Tasks Assigned", min_value=0, step=1, help="Total number of tasks handed out."),
+        "hours_invested": st.column_config.NumberColumn("Hours Logged", min_value=0, step=1, help="Estimated time spent this week."),
+        "tasks_completed": st.column_config.NumberColumn("Tasks Completed", min_value=0, step=1, help="Total tickets fully finished."),
+        "tasks_on_time": st.column_config.NumberColumn("Completed On Time", min_value=0, step=1, help="How many were completed by the target deadline?"),
+        "tasks_late": st.column_config.NumberColumn("Completed Late", min_value=0, step=1, help="How many were completed past the deadline?"),
+        "blocked_tasks": st.column_config.NumberColumn("Blocked Tasks", min_value=0, step=1, help="How many tasks are stuck waiting on something else?"),
+        "avg_quality_1_to_5": st.column_config.NumberColumn("Quality Avg (1-5)", min_value=0.0, max_value=5.0, step=0.1, help="Rate the quality of their work output."),
+        "meetings_required": st.column_config.NumberColumn("Meetings Required", min_value=0, step=1, help="How many meetings should they have attended?"),
+        "meetings_attended": st.column_config.NumberColumn("Meetings Attended", min_value=0, step=1, help="How many meetings did they actually show up to?"),
+        "pm_confidence_1_to_5": st.column_config.NumberColumn("PM Confidence (1-5)", min_value=1.0, max_value=5.0, step=0.5, help="Your personal trust in their current trajectory."),
+        "communication_score": st.column_config.NumberColumn("Comm Score (1-5)", min_value=0.0, max_value=5.0, step=0.5, help="Responsiveness, clarity, and teamwork."),
+        "notes": st.column_config.TextColumn("Notes / Blockers", help="Any external flags, context, or praise."),
     }
 
     col_config_locked = col_config_base.copy()
@@ -1122,7 +1127,7 @@ elif current_page == "◫ Content Calendar":
 
     st.markdown('<div class="glass">', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
-    cal_mission = c1.selectbox("Mission", ["Mars", "Luna", "General"])
+    cal_mission = c1.selectbox("Mission", ["General", "Mars", "Luna"], index=0)
     cal_cycle = c2.selectbox("Cycle", DYNAMIC_CYCLES, index=1)
     
     cal_month = c3.selectbox("Month", MONTHS_LIST, key="cc_pm_month")
@@ -1237,10 +1242,15 @@ elif current_page == "◫ Content Calendar":
     
     config = {
         "content_id": None, 
-        "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD"),
-        "platform": st.column_config.SelectboxColumn("Platform", options=list(PLATFORM_COLORS.keys())),
-        "status": st.column_config.SelectboxColumn("Status", options=list(STATUS_SYMBOLS.keys())),
-        "actual_posted_date": st.column_config.DateColumn("Actual Posted", format="YYYY-MM-DD"),
+        "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD", help="Date the content is scheduled to go live."),
+        "platform": st.column_config.SelectboxColumn("Platform", options=list(PLATFORM_COLORS.keys()), help="Target platform for the content."),
+        "content_title": st.column_config.TextColumn("Title", help="Short name or headline for the content."),
+        "description": st.column_config.TextColumn("Description", help="Caption, draft, or key points."),
+        "content_type": st.column_config.TextColumn("Content Type", help="Format of the content (e.g., Reel, Carousel, Newsletter)."),
+        "owner": st.column_config.TextColumn("Owner", help="Team member responsible for this content."),
+        "status": st.column_config.SelectboxColumn("Status", options=list(STATUS_SYMBOLS.keys()), help="Current state. Marking as 'Posted' automatically sets actual dates."),
+        "actual_posted_date": st.column_config.DateColumn("Actual Posted", format="YYYY-MM-DD", help="When it actually went live. Auto-fills when status is Posted."),
+        "notes": st.column_config.TextColumn("Notes", help="Links to assets, final URLs, or comments."),
     }
     
     edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500, column_config=config)
@@ -1345,7 +1355,7 @@ elif current_page == "$ Fundraising & Finance":
     
     st.markdown('<div class="glass">', unsafe_allow_html=True)
     f1, f2, f3, f4 = st.columns(4)
-    fin_mission = f1.selectbox("Mission Filter", ["Mars", "Luna", "General"])
+    fin_mission = f1.selectbox("Mission Filter", ["General", "Mars", "Luna"], index=0)
     fin_cycle = f2.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
     
     current_month_index = date.today().month - 1
@@ -1468,16 +1478,18 @@ elif current_page == "$ Fundraising & Finance":
         
         config = {
             "event_id": None, 
-            "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD"),
-            "actual_date": st.column_config.DateColumn("Actual Date", format="YYYY-MM-DD"),
-            "event_type": st.column_config.SelectboxColumn("Type", options=["Food Sale", "Raffle", "Sponsorship", "Donation", "Venue Fundraiser", "Online Campaign", "Community Event", "Other"]),
-            "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Completed", "Cancelled", "Delayed", "Needs Follow-Up"]),
-            "expected_gross_revenue": st.column_config.NumberColumn("Exp. Revenue $"),
-            "expected_expenses": st.column_config.NumberColumn("Exp. Cost $"),
-            "venue_confirmed": st.column_config.CheckboxColumn("Venue"),
-            "permits_completed": st.column_config.CheckboxColumn("Permits"),
-            "marketing_ready": st.column_config.CheckboxColumn("Marketing"),
-            "volunteers_ready": st.column_config.CheckboxColumn("Vols"),
+            "event_name": st.column_config.TextColumn("Event Name", help="Name of the fundraising activity."),
+            "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD", help="When the event is scheduled."),
+            "actual_date": st.column_config.DateColumn("Actual Date", format="YYYY-MM-DD", help="When the event actually occurred."),
+            "event_type": st.column_config.SelectboxColumn("Type", options=["Food Sale", "Raffle", "Sponsorship", "Donation", "Venue Fundraiser", "Online Campaign", "Community Event", "Other"], help="Category of the fundraiser."),
+            "location": st.column_config.TextColumn("Location", help="Physical or virtual venue."),
+            "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Completed", "Cancelled", "Delayed", "Needs Follow-Up"], help="Current operational phase."),
+            "expected_gross_revenue": st.column_config.NumberColumn("Exp. Revenue $", help="Estimated total income before expenses."),
+            "expected_expenses": st.column_config.NumberColumn("Exp. Cost $", help="Estimated total cost to run the event."),
+            "venue_confirmed": st.column_config.CheckboxColumn("Venue", help="Is the location secured?"),
+            "permits_completed": st.column_config.CheckboxColumn("Permits", help="Are all legal/campus permits approved?"),
+            "marketing_ready": st.column_config.CheckboxColumn("Marketing", help="Are flyers/social posts ready?"),
+            "volunteers_ready": st.column_config.CheckboxColumn("Vols", help="Is the team staffing finalized?"),
         }
         
         edited_evt = st.data_editor(evt_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
@@ -1510,12 +1522,13 @@ elif current_page == "$ Fundraising & Finance":
         
         config = {
             "transaction_id": None, 
-            "transaction_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-            "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options),
-            "source_type": st.column_config.SelectboxColumn("Source", options=["Individual", "Sponsor", "Ticket Sale", "Raffle Sale", "Food Sale", "Online Donation", "Cash Donation", "Other"]),
-            "payment_method": st.column_config.SelectboxColumn("Method", options=["ATH Movil", "Cash", "PayPal", "Check", "Bank Transfer", "Card", "Other"]),
-            "amount": st.column_config.NumberColumn("Amount $"),
-            "deposited": st.column_config.CheckboxColumn("Deposited?"),
+            "transaction_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD", help="Date the money was received."),
+            "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options, help="Which event generated this income?"),
+            "source_type": st.column_config.SelectboxColumn("Source", options=["Individual", "Sponsor", "Ticket Sale", "Raffle Sale", "Food Sale", "Online Donation", "Cash Donation", "Other"], help="Who or what provided the funds?"),
+            "source_name": st.column_config.TextColumn("Source Name", help="Name of the person/sponsor (optional)."),
+            "payment_method": st.column_config.SelectboxColumn("Method", options=["ATH Movil", "Cash", "PayPal", "Check", "Bank Transfer", "Card", "Other"], help="How was it paid?"),
+            "amount": st.column_config.NumberColumn("Amount $", help="Gross amount received."),
+            "deposited": st.column_config.CheckboxColumn("Deposited?", help="Has this hit the main bank account?"),
         }
         
         edited_txn = st.data_editor(txn_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
@@ -1527,7 +1540,6 @@ elif current_page == "$ Fundraising & Finance":
                 meta = trans_df[[c for c in meta_cols if c in trans_df.columns]].dropna(subset=["transaction_id"])
                 final = pd.merge(final, meta, on="transaction_id", how="left")
             
-            # Map event_name back to event_id
             name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
             final["event_id"] = final["event_name"].map(name_to_id).fillna("")
             
@@ -1551,11 +1563,13 @@ elif current_page == "$ Fundraising & Finance":
         
         config = {
             "expense_id": None, 
-            "expense_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-            "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options),
-            "category": st.column_config.SelectboxColumn("Category", options=["Food / Materials", "Venue", "Marketing", "Equipment", "Transportation", "Permit", "Prize", "Supplies", "Other"]),
-            "amount": st.column_config.NumberColumn("Amount $"),
-            "reimbursed": st.column_config.CheckboxColumn("Reimbursed?"),
+            "expense_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD", help="Date the purchase was made."),
+            "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options, help="Which event is this cost for?"),
+            "vendor": st.column_config.TextColumn("Vendor", help="Store or supplier name."),
+            "item_description": st.column_config.TextColumn("Item", help="What was bought?"),
+            "category": st.column_config.SelectboxColumn("Category", options=["Food / Materials", "Venue", "Marketing", "Equipment", "Transportation", "Permit", "Prize", "Supplies", "Other"], help="Type of expense."),
+            "amount": st.column_config.NumberColumn("Amount $", help="Total cost paid."),
+            "reimbursed": st.column_config.CheckboxColumn("Reimbursed?", help="Has the purchaser been paid back?"),
         }
         
         edited_exp = st.data_editor(exp_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
@@ -1590,9 +1604,11 @@ elif current_page == "$ Fundraising & Finance":
         
         config = {
             "goal_id": None, 
-            "deadline": st.column_config.DateColumn("Deadline", format="YYYY-MM-DD"),
-            "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Achieved", "Missed"]),
-            "target_amount": st.column_config.NumberColumn("Target $"),
+            "goal_name": st.column_config.TextColumn("Goal Name", help="Name of the fundraising target."),
+            "purpose": st.column_config.TextColumn("Purpose", help="Why are we raising this money?"),
+            "deadline": st.column_config.DateColumn("Deadline", format="YYYY-MM-DD", help="When do we need the funds by?"),
+            "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Achieved", "Missed"], help="Current standing."),
+            "target_amount": st.column_config.NumberColumn("Target $", help="Total amount needed."),
         }
         
         edited_goal = st.data_editor(goal_view, num_rows="dynamic", use_container_width=True, height=250, column_config=config)
