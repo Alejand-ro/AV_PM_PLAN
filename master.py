@@ -56,31 +56,56 @@ CONTENT_CAL_COLUMNS = [
     "actual_posted_date", "marked_done_at", "notes", "created_at", "updated_at"
 ]
 
+EVENTS_HEADERS = [
+    "event_id", "mission", "cycle", "event_name", "event_type", "planned_date", "actual_date", 
+    "location", "target_audience", "expected_gross_revenue", "expected_expenses", "expected_net_revenue", 
+    "actual_gross_revenue", "actual_expenses", "actual_net_revenue", "status", "owner", "key_contacts", 
+    "venue_confirmed", "permits_needed", "permits_completed", "marketing_ready", "volunteers_ready", 
+    "follow_up_completed", "notes", "created_at", "updated_at"
+]
+
+TRANSACTIONS_HEADERS = [
+    "transaction_id", "event_id", "transaction_date", "mission", "cycle", "event_name", 
+    "source_type", "source_name", "payment_method", "amount", "confirmed", "deposited", 
+    "deposit_date", "notes", "created_at", "updated_at"
+]
+
+EXPENSES_HEADERS = [
+    "expense_id", "event_id", "expense_date", "mission", "cycle", "event_name", "vendor", 
+    "item_description", "category", "amount", "reimbursed", "receipt_available", "notes", 
+    "created_at", "updated_at"
+]
+
+GOALS_HEADERS = [
+    "goal_id", "mission", "cycle", "goal_name", "target_amount", "deadline", "purpose", 
+    "status", "notes", "created_at", "updated_at"
+]
+
 PLATFORM_COLORS = {
-    "No post day": "#ef4444", 
-    "Outreach Activity": "#f97316",
-    "LinkedIn": "#eab308", 
-    "Email": "#22c55e", 
-    "X": "#2dd4bf",
-    "TikTok": "#38bdf8", 
-    "Facebook": "#c084fc", 
-    "YouTube": "#f43f5e",
-    "Instagram": "#d946ef", 
-    "Other": "#94a3b8"
+    "No post day": "#ef4444", "Outreach Activity": "#f97316", "LinkedIn": "#eab308", 
+    "Email": "#22c55e", "X": "#2dd4bf", "TikTok": "#38bdf8", "Facebook": "#c084fc", 
+    "YouTube": "#f43f5e", "Instagram": "#d946ef", "Other": "#94a3b8"
 }
 
 STATUS_SYMBOLS = {
-    "Planned": "◌", 
-    "In Progress": "◐", 
-    "Posted": "●",
-    "Missed": "⚠", 
-    "Cancelled": "×", 
-    "Rescheduled": "↷"
+    "Planned": "◌", "In Progress": "◐", "Posted": "●",
+    "Missed": "⚠", "Cancelled": "×", "Rescheduled": "↷"
 }
 
 STATUS_CHART_COLORS = {
     "Posted": "#22c55e", "Planned": "#3b82f6", "In Progress": "#eab308",
     "Missed": "#ef4444", "Cancelled": "#94a3b8", "Rescheduled": "#a855f7"
+}
+
+FIN_EVENT_TYPE_COLORS = {
+    "Food Sale": "#f97316", "Raffle": "#3b82f6", "Sponsorship": "#22c55e", 
+    "Donation": "#10b981", "Venue Fundraiser": "#8b5cf6", "Online Campaign": "#38bdf8", 
+    "Community Event": "#f43f5e", "Other": "#94a3b8"
+}
+
+FIN_STATUS_COLORS = {
+    "Completed": "#22c55e", "Planned": "#3b82f6", "In Progress": "#eab308",
+    "Delayed": "#f97316", "Cancelled": "#94a3b8", "Needs Follow-Up": "#ef4444"
 }
 
 # --- DYNAMIC YEARLY CYCLES ---
@@ -106,14 +131,25 @@ def google_sheet_ready() -> tuple[bool, str]:
 def get_spreadsheet():
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Missing [gcp_service_account] in Streamlit Secrets.")
-
     service_info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(service_info, scopes=SCOPES)
     client = gspread.authorize(creds)
-
     sheet_id = st.secrets.get("SHEET_ID", "").strip() if st.secrets.get("SHEET_ID") else ""
     sheet_name = st.secrets.get("SHEET_NAME", "AV PM Reports Database")
     return client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
+
+def get_or_create_worksheet(title: str, columns: list[str], rows: int = 1000):
+    spreadsheet = get_spreadsheet()
+    try:
+        worksheet = spreadsheet.worksheet(title)
+    except gspread.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=title, rows=rows, cols=len(columns) + 5)
+        worksheet.update("1:1", [columns])
+    
+    existing = worksheet.row_values(1)
+    if not existing:
+        worksheet.update("1:1", [columns])
+    return worksheet
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_reports_from_google_sheets(_client, worksheet_name, force_refresh_token=0) -> tuple[pd.DataFrame, list]:
@@ -188,29 +224,6 @@ def load_schedule_sheet(_client, worksheet_name: str, required_headers: list[str
     except Exception as e:
         return pd.DataFrame(columns=required_headers)
 
-def save_schedule_sheet(_client, worksheet_name: str, df: pd.DataFrame, headers: list[str]):
-    try:
-        ws = _client.worksheet(worksheet_name)
-    except gspread.WorksheetNotFound:
-        ws = _client.add_worksheet(title=worksheet_name, rows=200, cols=len(headers))
-        ws.update("1:1", [headers])
-    
-    existing = ws.row_values(1)
-    if not existing:
-        ws.update("1:1", [headers])
-        
-    save_df = df.copy()
-    
-    for col in save_df.columns:
-        if pd.api.types.is_datetime64_any_dtype(save_df[col]):
-            save_df[col] = save_df[col].dt.strftime('%Y-%m-%d')
-            
-    save_df = save_df.astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
-    
-    data = save_df[headers].values.tolist()
-    ws.clear()
-    ws.append_rows([headers] + data, value_input_option="USER_ENTERED")
-
 def load_planned_schedule(mission: str, cycle: str, client, refresh_token) -> pd.DataFrame:
     sheet_name = get_schedule_tab_name(mission, cycle, "planned")
     df = load_schedule_sheet(client, sheet_name, PLANNED_HEADERS, refresh_token)
@@ -228,26 +241,6 @@ def load_actual_schedule(mission: str, cycle: str, client, refresh_token) -> pd.
         df["actual_end_date"] = pd.to_datetime(df["actual_end_date"], errors="coerce")
         df["percent_complete"] = pd.to_numeric(df["percent_complete"], errors="coerce").fillna(0)
     return df
-
-def sync_actual_with_planned(planned_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
-    if planned_df.empty:
-        return actual_df
-    p_tasks = planned_df[["task"]].drop_duplicates()
-    if actual_df.empty:
-        df = p_tasks.copy()
-        for c in ACTUAL_HEADERS:
-            if c != "task":
-                df[c] = ""
-        return df
-    
-    df = pd.merge(p_tasks, actual_df, on="task", how="left")
-    
-    for col in ACTUAL_HEADERS:
-        if col not in df.columns:
-            df[col] = ""
-            
-    df = df.fillna("")
-    return df[ACTUAL_HEADERS]
 
 def build_plan_vs_actual_dataframe(planned_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
     if planned_df.empty:
@@ -326,69 +319,131 @@ def load_content_calendar(_client, force_refresh_token=0) -> pd.DataFrame:
     df["actual_posted_date_dt"] = pd.to_datetime(df["actual_posted_date"], errors="coerce")
     return df
 
+# --- FINANCE HELPER FUNCTIONS ---
+@st.cache_data(ttl=600, show_spinner=False)
+def load_finance_sheet(_client, sheet_name: str, headers: list[str], force_refresh_token=0) -> pd.DataFrame:
+    try:
+        worksheet = _client.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
+        worksheet = _client.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
+        worksheet.update("1:1", [headers])
+        return pd.DataFrame(columns=headers)
+        
+    records = worksheet.get_all_records()
+    if not records:
+        return pd.DataFrame(columns=headers)
+        
+    df = pd.DataFrame(records)
+    for col in headers:
+        if col not in df.columns:
+            df[col] = ""
+    return df
+
+# -----------------------------------------------------------------------------
+# SIDEBAR / NAVIGATION
+# -----------------------------------------------------------------------------
+st.sidebar.header("⌖ Navigation")
+current_page = st.sidebar.radio("Go to", ["▦ Dashboard Overview", "◷ Mission Schedule", "⌖ Gantt Management", "▦ Content Calendar", "$ Fundraising & Finance"])
+
 # -----------------------------------------------------------------------------
 # COMPETITION STATE INITIALIZATION
 # -----------------------------------------------------------------------------
 if "competition" not in st.session_state:
     st.session_state.competition = "All"
-
 competition = st.session_state.competition
 
 # -----------------------------------------------------------------------------
-# DYNAMIC THEME ENGINE
+# DYNAMIC THEME ENGINE (VIBE SHIFT)
 # -----------------------------------------------------------------------------
-if competition == "Mars":
-    bg_top = "#1e293b"
+if current_page == "▦ Content Calendar":
+    # Content & Media Vibe (Purple / Magenta)
+    bg_top = "#2e1065" 
     bg_bot = "#000000"
-    side_top = "#1e293b"
-    side_bot = "#111827"
-    panel_bg = "rgba(30, 41, 59, 0.45)"
-    panel_light = "rgba(51, 65, 85, 0.35)"
-    primary = "#ef4444"
-    primary_hover = "#dc2626"
+    side_top = "#2e1065"
+    side_bot = "#000000"
+    panel_bg = "rgba(30, 27, 75, 0.60)" 
+    panel_light = "rgba(46, 16, 101, 0.40)"
+    primary = "#ec4899"  
+    primary_hover = "#db2777"
     primary_text = "#ffffff"
-    primary_shadow = "rgba(239, 68, 68, 0.25)"
-    
-    logo_a_color = "#ef4444"
-    logo_a_shadow = "#7f1d1d"
-    logo_v_color = "#ffffff"
-    logo_v_shadow = "#94a3b8"
-    mode_text = "Mars Mission Command"
-    
-elif competition == "Luna":
-    bg_top = "#334155"      
-    bg_bot = "#0f172a"      
-    side_top = "#334155"
-    side_bot = "#1e293b"
-    panel_bg = "rgba(71, 85, 105, 0.40)"    
-    panel_light = "rgba(100, 116, 139, 0.30)"
-    primary = "#f8fafc"     
-    primary_hover = "#e2e8f0"
-    primary_text = "#1e3a8a" 
-    primary_shadow = "rgba(255, 255, 255, 0.20)"
-    
-    logo_a_color = "#f8fafc"
-    logo_a_shadow = "#64748b"
-    logo_v_color = "#3b82f6"
-    logo_v_shadow = "#1e3a8a"
-    mode_text = "Luna Mission Command"
+    primary_shadow = "rgba(236, 72, 153, 0.25)"
+    logo_a_color = "#ec4899"
+    logo_a_shadow = "#831843"
+    logo_v_color = "#a855f7"
+    logo_v_shadow = "#581c87"
+    custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.5em; color: #ec4899; text-shadow: 2px 2px 0px #831843; font-style: normal; transform: translateY(-10px); display: inline-block;">[►]</span></div>'
+    mode_text = "Content Calendar Command"
+
+elif current_page == "$ Fundraising & Finance":
+    # Finance Vibe (Emerald / Mint Green)
+    bg_top = "#064e3b" 
+    bg_bot = "#000000"
+    side_top = "#064e3b"
+    side_bot = "#000000"
+    panel_bg = "rgba(2, 44, 34, 0.60)"
+    panel_light = "rgba(6, 78, 59, 0.40)"
+    primary = "#10b981"  
+    primary_hover = "#059669"
+    primary_text = "#ffffff"
+    primary_shadow = "rgba(16, 185, 129, 0.25)"
+    logo_a_color = "#10b981"
+    logo_a_shadow = "#064e3b"
+    logo_v_color = "#6ee7b7"
+    logo_v_shadow = "#047857"
+    custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.6em; color: #10b981; text-shadow: 2px 2px 0px #064e3b; font-style: normal; transform: translateY(-8px); display: inline-block;">$</span></div>'
+    mode_text = "Fundraising & Finance Command"
+
 else:
-    bg_top = "#1e293b"
-    bg_bot = "#000000"
-    side_top = "#1e293b"
-    side_bot = "#111827"
-    panel_bg = "rgba(30, 41, 59, 0.45)"
-    panel_light = "rgba(51, 65, 85, 0.35)"
-    primary = "#3b82f6" 
-    primary_hover = "#2563eb"
-    primary_text = "#ffffff"
-    primary_shadow = "rgba(59, 130, 246, 0.25)"
-    
-    logo_a_color = "#ef4444"
-    logo_a_shadow = "#7f1d1d"
-    logo_v_color = "#3b82f6"
-    logo_v_shadow = "#1e3a8a"
-    mode_text = "All Missions Command"
+    # Standard Performance Vibe
+    custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v">V</span></div>'
+    if competition == "Mars":
+        bg_top = "#1e293b"
+        bg_bot = "#000000"
+        side_top = "#1e293b"
+        side_bot = "#111827"
+        panel_bg = "rgba(30, 41, 59, 0.45)"
+        panel_light = "rgba(51, 65, 85, 0.35)"
+        primary = "#ef4444"
+        primary_hover = "#dc2626"
+        primary_text = "#ffffff"
+        primary_shadow = "rgba(239, 68, 68, 0.25)"
+        logo_a_color = "#ef4444"
+        logo_a_shadow = "#7f1d1d"
+        logo_v_color = "#ffffff"
+        logo_v_shadow = "#94a3b8"
+        mode_text = "Mars Mission Command"
+    elif competition == "Luna":
+        bg_top = "#334155"      
+        bg_bot = "#0f172a"      
+        side_top = "#334155"
+        side_bot = "#1e293b"
+        panel_bg = "rgba(71, 85, 105, 0.40)"    
+        panel_light = "rgba(100, 116, 139, 0.30)"
+        primary = "#f8fafc"     
+        primary_hover = "#e2e8f0"
+        primary_text = "#1e3a8a" 
+        primary_shadow = "rgba(255, 255, 255, 0.20)"
+        logo_a_color = "#f8fafc"
+        logo_a_shadow = "#64748b"
+        logo_v_color = "#3b82f6"
+        logo_v_shadow = "#1e3a8a"
+        mode_text = "Luna Mission Command"
+    else:
+        bg_top = "#1e293b"
+        bg_bot = "#000000"
+        side_top = "#1e293b"
+        side_bot = "#111827"
+        panel_bg = "rgba(30, 41, 59, 0.45)"
+        panel_light = "rgba(51, 65, 85, 0.35)"
+        primary = "#3b82f6" 
+        primary_hover = "#2563eb"
+        primary_text = "#ffffff"
+        primary_shadow = "rgba(59, 130, 246, 0.25)"
+        logo_a_color = "#ef4444"
+        logo_a_shadow = "#7f1d1d"
+        logo_v_color = "#3b82f6"
+        logo_v_shadow = "#1e3a8a"
+        mode_text = "All Missions Command"
 
 st.markdown(
     f"""
@@ -554,30 +609,57 @@ st.markdown(
     }}
 
     .stButton > button {{
-        background: rgba(255,255,255,0.1) !important; 
-        color: #ffffff !important;
-        border: 1px solid rgba(255,255,255,0.2) !important;
+        background: rgba(255,255,255,0.05) !important; 
+        color: #f8fafc !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 12px !important;
-        font-weight: 800 !important;
+        font-weight: 700 !important;
+        transition: all 0.3s ease !important;
     }}
-    .stButton > button * {{ color: #ffffff !important; }}
+    .stButton > button:hover {{
+        background: rgba(255,255,255,0.1) !important;
+        border-color: rgba(255,255,255,0.3) !important;
+        color: #ffffff !important;
+    }}
     
-    button[kind="primary"], [data-testid="stFormSubmitButton"] > button, .stDownloadButton > button {{
+    button[kind="primary"], [data-testid="stFormSubmitButton"] > button {{
         background: var(--primary) !important;
         color: var(--primary-text) !important;
         box-shadow: 0 8px 20px var(--primary-shadow) !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 12px !important;
         font-weight: 800 !important;
+        transition: all 0.3s ease !important;
     }}
     
-    button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button *, .stDownloadButton > button * {{
+    button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button * {{
         color: var(--primary-text) !important;
     }}
     
-    button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover, .stDownloadButton > button:hover {{ 
+    button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover {{ 
         background: var(--primary-hover) !important; 
         transform: translateY(-1px); 
+    }}
+
+    .stDownloadButton > button {{
+        background: rgba(0,0,0,0.4) !important;
+        color: #94a3b8 !important;
+        border: 1px dashed rgba(255,255,255,0.2) !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+        transition: all 0.3s ease !important;
+    }}
+    .stDownloadButton > button * {{
+        color: #94a3b8 !important;
+    }}
+    .stDownloadButton > button:hover {{
+        background: rgba(0,0,0,0.8) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255,255,255,0.4) !important;
+    }}
+    .stDownloadButton > button:hover * {{
+        color: #ffffff !important;
     }}
     
     h1, h2, h3, p, li {{ color: var(--ink) !important; }}
@@ -641,12 +723,6 @@ def metric_delta_text(current: float | None, previous: float | None) -> str:
     delta = current - previous
     sign = "+" if delta >= 0 else ""
     return f"{sign}{delta:.1f} pts vs previous week"
-
-# -----------------------------------------------------------------------------
-# SIDEBAR / NAVIGATION
-# -----------------------------------------------------------------------------
-st.sidebar.header("⌖ Navigation")
-current_page = st.sidebar.radio("Go to", ["▦ Dashboard Overview", "◷ Mission Schedule", "⌖ Gantt Management", "▦ Content Calendar"])
 
 sheet_ok, sheet_msg = google_sheet_ready()
 
@@ -738,7 +814,7 @@ if current_page == "⌖ Gantt Management":
         <div class="hero">
           <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div>
                     <div class="eyebrow">Project AV • Timeline Administration</div>
                     <div class="title">Gantt Management</div>
@@ -810,7 +886,7 @@ elif current_page == "◷ Mission Schedule":
         <div class="hero">
           <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div>
                     <div class="eyebrow">Project AV • {mode_text}</div>
                     <div class="title">Mission Schedule</div>
@@ -903,7 +979,7 @@ elif current_page == "▦ Content Calendar":
         <div class="hero">
           <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div>
                     <div class="eyebrow">Project AV • Analytics</div>
                     <div class="title">Content Calendar Command</div>
@@ -930,12 +1006,10 @@ elif current_page == "▦ Content Calendar":
     cal_mission = c1.selectbox("Mission Filter", ["All", "Mars", "Luna", "General"], index=default_mission_idx)
     
     cal_cycle = c2.selectbox("Cycle Filter", ["All"] + DYNAMIC_CYCLES, index=0)
-    
     cal_month = c3.selectbox("Month Filter", ["All"] + MONTHS_LIST, key="cc_filter_month")
     
     c4, c5, c6 = st.columns(3)
     year_opts = ["All"] + list(range(_cy - 2, _cy + 5))
-    
     cal_year = c4.selectbox("Year Filter", year_opts, key="cc_filter_year")
     cal_platform = c5.selectbox("Platform Filter", ["All"] + list(PLATFORM_COLORS.keys()), index=0)
     cal_status = c6.selectbox("Status Filter", ["All"] + list(STATUS_SYMBOLS.keys()), index=0)
@@ -1023,7 +1097,7 @@ elif current_page == "▦ Content Calendar":
                         status = item.get("status", "Planned")
                         bg_color = PLATFORM_COLORS.get(platform, "#94a3b8")
                         symbol = STATUS_SYMBOLS.get(status, "◌")
-                        content_html += f"<div class='cal-badge' style='background:{bg_color};' title='{title}'>{symbol} {platform}</div>"
+                        content_html += f"<div class='cal-badge' style='background:{bg_color}; color:#fff;' title='{title}'>{symbol} {platform}</div>"
                         
                     opacity = "0.5" if i >= 5 else "1.0"
                     cols[i].markdown(f"""
@@ -1118,6 +1192,412 @@ elif current_page == "▦ Content Calendar":
     st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
+# PAGE: FUNDRAISING & FINANCE COMMAND
+# -----------------------------------------------------------------------------
+elif current_page == "$ Fundraising & Finance":
+    
+    if "fin_filter_month" not in st.session_state:
+        st.session_state.fin_filter_month = calendar.month_name[date.today().month]
+    if "fin_filter_year" not in st.session_state:
+        st.session_state.fin_filter_year = _cy
+
+    def fin_go_prev_month():
+        if st.session_state.fin_filter_month == "All" or st.session_state.fin_filter_year == "All":
+            st.session_state.fin_filter_month = calendar.month_name[date.today().month]
+            st.session_state.fin_filter_year = _cy
+            return
+        m_idx = MONTHS_LIST.index(st.session_state.fin_filter_month) + 1
+        y = int(st.session_state.fin_filter_year)
+        if m_idx == 1:
+            m_idx = 12
+            y -= 1
+        else:
+            m_idx -= 1
+        st.session_state.fin_filter_month = calendar.month_name[m_idx]
+        st.session_state.fin_filter_year = y
+
+    def fin_go_next_month():
+        if st.session_state.fin_filter_month == "All" or st.session_state.fin_filter_year == "All":
+            st.session_state.fin_filter_month = calendar.month_name[date.today().month]
+            st.session_state.fin_filter_year = _cy
+            return
+        m_idx = MONTHS_LIST.index(st.session_state.fin_filter_month) + 1
+        y = int(st.session_state.fin_filter_year)
+        if m_idx == 12:
+            m_idx = 1
+            y += 1
+        else:
+            m_idx += 1
+        st.session_state.fin_filter_month = calendar.month_name[m_idx]
+        st.session_state.fin_filter_year = y
+
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero-content">
+            <div class="av-logo-container">
+                {custom_logo}
+                <div>
+                    <div class="eyebrow">Project AV • Financial Analytics</div>
+                    <div class="title">Fundraising & Finance Command</div>
+                </div>
+            </div>
+            <div class="subtitle" style="margin-top: 10px;">
+              Track fundraising goals, event performance, revenue, expenses, and net profit across Project AV.
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    default_mission_idx = 0
+    if competition == "Mars": default_mission_idx = 1
+    elif competition == "Luna": default_mission_idx = 2
+    fin_mission = c1.selectbox("Mission Filter", ["All", "Mars", "Luna", "General"], index=default_mission_idx)
+    fin_cycle = c2.selectbox("Cycle Filter", ["All"] + DYNAMIC_CYCLES, index=0)
+    
+    month_opts = ["All"] + MONTHS_LIST
+    fin_month = c3.selectbox("Month Filter", month_opts, key="fin_filter_month")
+    
+    c4, c5, c6 = st.columns(3)
+    year_opts = ["All"] + list(range(_cy - 2, _cy + 5))
+    fin_year = c4.selectbox("Year Filter", year_opts, key="fin_filter_year")
+    
+    fin_status = c5.selectbox("Status Filter", ["All"] + list(FIN_STATUS_COLORS.keys()), index=0)
+    fin_type = c6.selectbox("Event Type Filter", ["All"] + list(FIN_EVENT_TYPE_COLORS.keys()), index=0)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    events_raw = load_finance_sheet(client, "fundraising_events", EVENTS_HEADERS, st.session_state.force_refresh)
+    trans_raw = load_finance_sheet(client, "fundraising_transactions", TRANSACTIONS_HEADERS, st.session_state.force_refresh)
+    exp_raw = load_finance_sheet(client, "fundraising_expenses", EXPENSES_HEADERS, st.session_state.force_refresh)
+    goals_raw = load_finance_sheet(client, "fundraising_goals", GOALS_HEADERS, st.session_state.force_refresh)
+
+    if events_raw.empty and trans_raw.empty and exp_raw.empty and goals_raw.empty:
+        st.info("ⓘ No fundraising records found yet. Add events, income, and expenses from the PM app.")
+        st.stop()
+
+    events_df = events_raw.copy()
+    if fin_mission != "All": events_df = events_df[events_df["mission"] == fin_mission]
+    if fin_cycle != "All": events_df = events_df[events_df["cycle"] == fin_cycle]
+    if fin_status != "All": events_df = events_df[events_df["status"] == fin_status]
+    if fin_type != "All": events_df = events_df[events_df["event_type"] == fin_type]
+    
+    if not events_df.empty:
+        events_df["planned_date_dt"] = pd.to_datetime(events_df["planned_date"], errors="coerce")
+        if fin_month != "All": 
+            events_df = events_df[events_df["planned_date_dt"].dt.month == MONTHS_LIST.index(fin_month) + 1]
+        if fin_year != "All": 
+            events_df = events_df[events_df["planned_date_dt"].dt.year == int(fin_year)]
+
+    trans_df = trans_raw.copy()
+    if fin_mission != "All": trans_df = trans_df[trans_df["mission"] == fin_mission]
+    if fin_cycle != "All": trans_df = trans_df[trans_df["cycle"] == fin_cycle]
+
+    exp_df = exp_raw.copy()
+    if fin_mission != "All": exp_df = exp_df[exp_df["mission"] == fin_mission]
+    if fin_cycle != "All": exp_df = exp_df[exp_df["cycle"] == fin_cycle]
+
+    goals_df = goals_raw.copy()
+    if fin_mission != "All": goals_df = goals_df[goals_df["mission"] == fin_mission]
+    if fin_cycle != "All": goals_df = goals_df[goals_df["cycle"] == fin_cycle]
+
+    # Recalculate Actuals dynamically for the master view based on filtered transactions
+    if not trans_df.empty:
+        trans_df["amount"] = pd.to_numeric(trans_df["amount"], errors="coerce").fillna(0)
+        trans_sums = trans_df.groupby("event_id")["amount"].sum()
+    else:
+        trans_sums = pd.Series()
+        
+    if not exp_df.empty:
+        exp_df["amount"] = pd.to_numeric(exp_df["amount"], errors="coerce").fillna(0)
+        exp_sums = exp_df.groupby("event_id")["amount"].sum()
+    else:
+        exp_sums = pd.Series()
+
+    t_gross, t_exp, t_net = 0.0, 0.0, 0.0
+
+    if not events_df.empty:
+        for idx, row in events_df.iterrows():
+            eid = row.get("event_id")
+            g = trans_sums.get(eid, 0.0)
+            e = exp_sums.get(eid, 0.0)
+            
+            events_df.at[idx, "actual_gross_revenue"] = g
+            events_df.at[idx, "actual_expenses"] = e
+            events_df.at[idx, "actual_net_revenue"] = g - e
+            
+            exp_g = float(row.get("expected_gross_revenue") or 0)
+            exp_e = float(row.get("expected_expenses") or 0)
+            events_df.at[idx, "expected_net_revenue"] = exp_g - exp_e
+            
+            t_gross += g
+            t_exp += e
+
+    t_net = t_gross - t_exp
+    
+    t_goal = 0.0
+    if not goals_df.empty:
+        goals_df["target_amount"] = pd.to_numeric(goals_df["target_amount"], errors="coerce").fillna(0)
+        t_goal = goals_df["target_amount"].sum()
+        
+    progress_pct = (t_net / t_goal * 100) if t_goal > 0 else 0.0
+    remaining = max(0, t_goal - t_net)
+    
+    best_event = "—"
+    worst_event = "—"
+    if not events_df.empty and t_gross > 0:
+        valid_evts = events_df[pd.notna(events_df["event_name"])]
+        if not valid_evts.empty:
+            best_event = valid_evts.loc[valid_evts["actual_net_revenue"].idxmax()]["event_name"]
+            worst_event = valid_evts.loc[valid_evts["actual_expenses"].idxmax()]["event_name"]
+        
+    cost_per_dlr = (t_exp / t_gross) if t_gross > 0 else 0.0
+    roi = (t_gross / t_exp * 100) if t_exp > 0 else 0.0
+
+    st.markdown('<div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:24px;">', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Gross Revenue", f"${t_gross:,.2f}")
+    m2.metric("Total Expenses", f"${t_exp:,.2f}")
+    m3.metric("Total Net Revenue", f"${t_net:,.2f}")
+    m4.metric("Goal Progress", f"{progress_pct:.1f}%")
+    
+    m5, m6, m7, m8 = st.columns(4)
+    m5.metric("Remaining to Goal", f"${remaining:,.2f}")
+    m6.metric("Best Event (Net)", str(best_event))
+    m7.metric("Cost per $1 Raised", f"${cost_per_dlr:.2f}")
+    m8.metric("ROI", f"{roi:.0f}%" if t_exp > 0 else "—")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Monthly Calendar Preview
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    if fin_month != "All" and fin_year != "All":
+        c_prev, c_title, c_next = st.columns([1, 6, 1])
+        with c_prev:
+            st.button("◀ Prev", on_click=fin_go_prev_month, use_container_width=True, key="btn_fprev")
+        with c_title:
+            st.markdown(f"<h3 style='text-align:center; margin-top:0;'>◫ {fin_month} {fin_year} Schedule</h3>", unsafe_allow_html=True)
+        with c_next:
+            st.button("Next ▶", on_click=fin_go_next_month, use_container_width=True, key="btn_fnext")
+            
+        month_idx = MONTHS_LIST.index(fin_month) + 1
+        cal_grid = calendar.monthcalendar(int(fin_year), month_idx)
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        
+        cols = st.columns(7)
+        for i, d_name in enumerate(day_names):
+            cols[i].markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:800; font-size:14px; margin-bottom:8px;'>{d_name}</div>", unsafe_allow_html=True)
+            
+        for week in cal_grid:
+            cols = st.columns(7)
+            for i, day in enumerate(week):
+                if day == 0:
+                    cols[i].markdown("<div class='cal-day empty'></div>", unsafe_allow_html=True)
+                else:
+                    date_str = f"{fin_year}-{month_idx:02d}-{day:02d}"
+                    content_html = ""
+                    
+                    if not events_df.empty:
+                        day_items = events_df[events_df["planned_date"] == date_str]
+                        for _, item in day_items.iterrows():
+                            title = str(item.get("event_name", "Unnamed Event"))
+                            status = item.get("status", "Planned")
+                            ex_net = float(item.get("expected_net_revenue") or 0)
+                            ac_net = float(item.get("actual_net_revenue") or 0)
+                            
+                            act_dt = item.get("actual_date")
+                            note = ""
+                            if act_dt and str(act_dt).strip() and str(act_dt).strip() != date_str:
+                                note = f" (Moved to {act_dt})"
+                                
+                            if status == "Completed":
+                                badge_text = f"{title}{note}<br><b>${ac_net:,.0f} net</b>"
+                                bg_color = "#22c55e" if ac_net >= ex_net else "#f97316"
+                            else:
+                                badge_text = f"{title}{note}<br><i>Est: ${ex_net:,.0f}</i>"
+                                bg_color = "#3b82f6"
+                                
+                            content_html += f"<div class='cal-badge' style='background:{bg_color}; color:#fff;' title='{status}'>{badge_text}</div>"
+                    
+                    opacity = "0.5" if i >= 5 else "1.0"
+                    cols[i].markdown(f"""
+                    <div class='cal-day' style='opacity: {opacity};'>
+                        <div class='cal-date'>{day}</div>
+                        {content_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+    else:
+        st.info("ⓘ Select a specific Month and Year in the filters above to view the visual calendar layout.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if not events_df.empty:
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Goal Progress")
+            if t_goal > 0:
+                fig_g = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = t_net,
+                    title = {'text': "Net Revenue vs Target"},
+                    gauge = {
+                        'axis': {'range': [0, max(t_goal, t_net, 1)]},
+                        'bar': {'color': "#22c55e"},
+                        'steps': [{'range': [0, t_goal], 'color': "rgba(255,255,255,0.1)"}],
+                        'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': t_goal}
+                    }
+                ))
+                fig_g.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_g, use_container_width=True)
+            else:
+                st.info("ⓘ No fundraising goal has been configured yet.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with c2:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Planned vs Actual Net by Event")
+            comp_df = events_df[["event_name", "expected_net_revenue", "actual_net_revenue"]].dropna(subset=["event_name"])
+            if not comp_df.empty:
+                fig_comp = go.Figure()
+                fig_comp.add_trace(go.Bar(x=comp_df["event_name"], y=comp_df["expected_net_revenue"], name="Expected", marker_color="rgba(255,255,255,0.2)"))
+                fig_comp.add_trace(go.Bar(x=comp_df["event_name"], y=comp_df["actual_net_revenue"], name="Actual", marker_color=primary))
+                fig_comp.update_layout(barmode='group', height=300, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.info("ⓘ No events to display.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown("##### Event Gross vs Expenses vs Net")
+        if not events_df.empty:
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(x=events_df["event_name"], y=events_df["actual_gross_revenue"], name="Gross", marker_color="#10b981"))
+            fig_bar.add_trace(go.Bar(x=events_df["event_name"], y=events_df["actual_expenses"], name="Expenses", marker_color="#ef4444"))
+            fig_bar.add_trace(go.Bar(x=events_df["event_name"], y=events_df["actual_net_revenue"], name="Net", marker_color="#3b82f6"))
+            fig_bar.update_layout(barmode='group', height=350, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+            st.plotly_chart(fig_bar, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        c3, c4 = st.columns([1, 1])
+        with c3:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Revenue by Payment Method")
+            if not trans_df.empty:
+                pm_df = trans_df.groupby("payment_method")["amount"].sum().reset_index()
+                fig_pm = px.pie(pm_df, values="amount", names="payment_method", hole=0.4)
+                fig_pm.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_pm, use_container_width=True)
+            else:
+                st.info("ⓘ Events are planned, but no income transactions have been recorded yet.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        with c4:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Expense Breakdown by Category")
+            if not exp_df.empty:
+                cat_df = exp_df.groupby("category")["amount"].sum().reset_index()
+                fig_cat = px.pie(cat_df, values="amount", names="category", hole=0.4)
+                fig_cat.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_cat, use_container_width=True)
+            else:
+                st.info("ⓘ Revenue exists, but no expenses have been recorded yet.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        c5, c6 = st.columns([1, 1.2])
+        with c5:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Event Status Breakdown")
+            st_df = events_df["status"].value_counts().reset_index()
+            st_df.columns = ["status", "count"]
+            fig_st = px.bar(st_df, x="status", y="count", color="status", color_discrete_map=FIN_STATUS_COLORS)
+            fig_st.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False, font=dict(color="#f8fafc"))
+            st.plotly_chart(fig_st, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with c6:
+            st.markdown('<div class="panel">', unsafe_allow_html=True)
+            st.markdown("##### Efficiency Scatter (ROI vs Expenses)")
+            st.markdown('<div class="chart-desc">Upper left is best (High ROI, Low Cost). Size = Gross Rev.</div>', unsafe_allow_html=True)
+            scat_df = events_df[events_df["actual_gross_revenue"] > 0].copy()
+            if not scat_df.empty:
+                fig_scat = px.scatter(
+                    scat_df, x="actual_expenses", y="actual_net_revenue", 
+                    size="actual_gross_revenue", color="event_type", 
+                    hover_name="event_name", color_discrete_map=FIN_EVENT_TYPE_COLORS
+                )
+                fig_scat.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc"))
+                st.plotly_chart(fig_scat, use_container_width=True)
+            else:
+                st.info("ⓘ Not enough transaction data to map ROI efficiency.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Report Card
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown("##### ◈ Event Report Card & Executive Summary")
+        event_options = [str(x) for x in events_df["event_name"].dropna().unique().tolist()]
+        if not event_options:
+            event_options = ["None"]
+            
+        sel_evt = st.selectbox("Select Event to View Detailed Report", options=event_options)
+        if sel_evt != "None":
+            evt_row = events_df[events_df["event_name"] == sel_evt].iloc[0]
+            
+            p_date = evt_row.get("planned_date", "—")
+            a_date = evt_row.get("actual_date", "—")
+            e_net = float(evt_row.get("expected_net_revenue") or 0)
+            a_gross = float(evt_row.get("actual_gross_revenue") or 0)
+            a_exp = float(evt_row.get("actual_expenses") or 0)
+            a_net = float(evt_row.get("actual_net_revenue") or 0)
+            diff = a_net - e_net
+            status = evt_row.get("status", "Unknown")
+            
+            summary_txt = f"**{sel_evt}** generated **${a_gross:,.2f}** in gross revenue, spent **${a_exp:,.2f}** in expenses, and produced **${a_net:,.2f}** in net profit. "
+            if status == "Completed":
+                if diff >= 0:
+                    summary_txt += f"It finished **${diff:,.2f}** above the expected net revenue and is marked Completed."
+                else:
+                    summary_txt += f"This event underperformed by **${abs(diff):,.2f}** compared to the expected net revenue, but is marked Completed."
+            else:
+                summary_txt += f"This event is currently marked as **{status}**."
+                
+            st.info(summary_txt)
+            
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Actual Gross", f"${a_gross:,.2f}")
+            r2.metric("Actual Expenses", f"${a_exp:,.2f}")
+            r3.metric("Actual Net Profit", f"${a_net:,.2f}")
+            r4.metric("Variance to Plan", f"${diff:,.2f}")
+            
+            st.markdown("**Operational Checklist:**")
+            v_conf = "☑" if str(evt_row.get("venue_confirmed")).lower() == "true" else "☐"
+            p_comp = "☑" if str(evt_row.get("permits_completed")).lower() == "true" else "☐"
+            m_read = "☑" if str(evt_row.get("marketing_ready")).lower() == "true" else "☐"
+            v_read = "☑" if str(evt_row.get("volunteers_ready")).lower() == "true" else "☐"
+            st.markdown(f"{v_conf} Venue | {p_comp} Permits | {m_read} Marketing | {v_read} Volunteers")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Export Tables
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown("##### ▦ Filtered Data Matrix & Exports")
+        view_cols = ["event_name", "mission", "cycle", "event_type", "planned_date", "actual_date", "expected_net_revenue", "actual_gross_revenue", "actual_expenses", "actual_net_revenue", "status"]
+        final_view = events_df[[c for c in view_cols if c in events_df.columns]].copy()
+        
+        if not final_view.empty:
+            final_view["difference_vs_expected"] = final_view["actual_net_revenue"] - pd.to_numeric(final_view["expected_net_revenue"], errors="coerce").fillna(0)
+        
+        st.dataframe(final_view, use_container_width=True, hide_index=True)
+        
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            st.download_button("⬇ Export Event Summary CSV", data=final_view.to_csv(index=False).encode("utf-8"), file_name=f"finance_events_{date.today().isoformat()}.csv", mime="text/csv", use_container_width=True)
+        with b2:
+            st.download_button("⬇ Export Transactions CSV", data=trans_df.to_csv(index=False).encode("utf-8"), file_name=f"finance_transactions_{date.today().isoformat()}.csv", mime="text/csv", use_container_width=True)
+        with b3:
+            st.download_button("⬇ Export Expenses CSV", data=exp_df.to_csv(index=False).encode("utf-8"), file_name=f"finance_expenses_{date.today().isoformat()}.csv", mime="text/csv", use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
 # PAGE: DASHBOARD OVERVIEW
 # -----------------------------------------------------------------------------
 elif current_page == "▦ Dashboard Overview":
@@ -1126,7 +1606,7 @@ elif current_page == "▦ Dashboard Overview":
         <div class="hero">
           <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div class="eyebrow" style="margin-top: 15px;">Executive Level Operations</div>
             </div>
             <div class="title">Performance <span class="admin-title">{mode_text}</span></div>
