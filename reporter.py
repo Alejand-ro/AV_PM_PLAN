@@ -744,7 +744,7 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             if selected_status in ["Completed", "Blocked"] and updated_task.get("assigned_to", ""):
                 queue_notification(sh, updated_task, df_notif, df_memb)
             st.success("Task updated successfully.")
-            st.experimental_rerun()
+            st.rerun()
 
     checklist = df_check[df_check["task_id"] == task_id].copy() if not df_check.empty else pd.DataFrame(columns=PLANNER_CHECKLIST_COLS)
     if not checklist.empty:
@@ -1720,7 +1720,7 @@ elif current_page == "▦ Planner":
                                 if new_status in ["Completed", "Blocked"] and updated_task.get("assigned_to", ""):
                                     recipient, role = queue_notification(client, updated_task, df_notif, df_memb)
                                     st.success(f"Notification queued for {recipient or updated_task.get('assigned_to', '')}.")
-                                st.experimental_rerun()
+                                st.rerun()
                             
                             asign = row.get('assigned_to', 'Unassigned')
                             if asign != 'Unassigned' and not df_memb.empty:
