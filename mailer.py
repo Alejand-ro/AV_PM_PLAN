@@ -516,6 +516,11 @@ def priority_color(priority):
     return colors.get(priority, "#6b7280")
 
 def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col):
+    edited_df = edited_df.copy()
+    for safe_col in ["delay_flag", "delay_days", "created_at", "updated_at"]:
+        if safe_col in edited_df.columns:
+            edited_df[safe_col] = edited_df[safe_col].astype(object)
+
     for idx, row in edited_df.iterrows():
         if not row.get(id_col) or pd.isna(row.get(id_col)) or str(row.get(id_col)).strip() == "":
             edited_df.at[idx, id_col] = str(uuid.uuid4())
