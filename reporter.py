@@ -132,6 +132,7 @@ STATUS_SYMBOLS = {"Planned": "◌", "In Progress": "◐", "Posted": "●", "Miss
 
 DYNAMIC_CYCLES = ["2026-2027", "2027-2028", "2028-2029"]
 MONTHS_LIST = list(calendar.month_name)[1:]
+_cy = date.today().year
 
 def google_sheet_ready() -> tuple[bool, str]:
     missing = []
@@ -153,45 +154,6 @@ def get_spreadsheet():
     sheet_id = st.secrets.get("SHEET_ID", "").strip() if st.secrets.get("SHEET_ID") else ""
     sheet_name = st.secrets.get("SHEET_NAME", "AV PM Reports Database")
     return client.open_by_key(sheet_id) if sheet_id else client.open(sheet_name)
-
-def get_or_create_worksheet(title: str, columns: list[str], rows: int = 1000):
-    spreadsheet = get_spreadsheet()
-    try:
-        worksheet = spreadsheet.worksheet(title)
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=title, rows=rows, cols=len(columns) + 5)
-    ensure_headers(worksheet, columns)
-    return worksheet
-
-@st.cache_resource(show_spinner=False)
-def get_worksheet():
-    worksheet_name = st.secrets.get("WORKSHEET_NAME", "reports")
-    return get_or_create_worksheet(worksheet_name, SHEET_COLUMNS, rows=2000)
-
-@st.cache_resource(show_spinner=False)
-def get_draft_worksheet():
-    draft_worksheet_name = st.secrets.get("DRAFT_WORKSHEET_NAME", "drafts")
-    return get_or_create_worksheet(draft_worksheet_name, DRAFT_COLUMNS, rows=1000)
-
-def get_content_calendar_worksheet():
-    return get_or_create_worksheet("content_calendar", CONTENT_CAL_COLUMNS, rows=2000)
-
-def ensure_headers(worksheet, required_columns: list[str]) -> list[str]:
-    existing = worksheet.row_values(1)
-    existing = [str(h).strip() for h in existing if str(h).strip()]
-    headers = list(existing)
-    for col in required_columns:
-        if col not in headers:
-            headers.append(col)
-    if headers != existing:
-        worksheet.update("1:1", [headers])
-    return headers
-
-def ensure_draft_headers(worksheet) -> list[str]:
-    return ensure_headers(worksheet, DRAFT_COLUMNS)
-
-def ensure_sheet_headers(worksheet) -> list[str]:
-    return ensure_headers(worksheet, SHEET_COLUMNS)
 
 def ensure_worksheet_safe(sh, title, columns):
     try:
@@ -235,7 +197,7 @@ def normalize_tracker_df(records: list[dict], template_df: pd.DataFrame) -> pd.D
 
 def load_cloud_draft(competition: str, pm_name: str, division: str, week_start) -> list[dict] | None:
     if not pm_name.strip(): return None
-    worksheet = get_draft_worksheet()
+    worksheet = ensure_worksheet_safe(get_spreadsheet(), st.secrets.get("DRAFT_WORKSHEET_NAME", "drafts"), DRAFT_COLUMNS)
     rows = worksheet.get_all_records()
     key = cloud_draft_key(competition, pm_name, division, week_start)
     for row in rows:
@@ -246,7 +208,7 @@ def load_cloud_draft(competition: str, pm_name: str, division: str, week_start) 
 
 def delete_cloud_draft(competition: str, pm_name: str, division: str, week_start) -> int:
     if not pm_name.strip(): return 0
-    worksheet = get_draft_worksheet()
+    worksheet = ensure_worksheet_safe(get_spreadsheet(), st.secrets.get("DRAFT_WORKSHEET_NAME", "drafts"), DRAFT_COLUMNS)
     key = cloud_draft_key(competition, pm_name, division, week_start)
     rows = worksheet.get_all_records()
     to_delete = [offset for offset, row in enumerate(rows, start=2) if str(row.get("draft_key", "")).strip() == key]
@@ -256,8 +218,7 @@ def delete_cloud_draft(competition: str, pm_name: str, division: str, week_start
 
 def save_cloud_draft(competition: str, pm_name: str, division: str, week_start, rows: list[dict]) -> tuple[bool, str]:
     if not pm_name.strip(): return False, "Please enter your PM name before saving a cloud draft."
-    worksheet = get_draft_worksheet()
-    headers = ensure_draft_headers(worksheet)
+    worksheet = ensure_worksheet_safe(get_spreadsheet(), st.secrets.get("DRAFT_WORKSHEET_NAME", "drafts"), DRAFT_COLUMNS)
     deleted = delete_cloud_draft(competition, pm_name, division, week_start)
     week_end = week_start + timedelta(days=4)
     draft_row = {
@@ -270,12 +231,28 @@ def save_cloud_draft(competition: str, pm_name: str, division: str, week_start, 
         "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "draft_json": json.dumps(rows, ensure_ascii=False),
     }
-    worksheet.append_row([draft_row.get(header, "") for header in headers], value_input_option="USER_ENTERED")
+    worksheet.append_row([draft_row.get(header, "") for header in DRAFT_COLUMNS], value_input_option="USER_ENTERED")
     if deleted:
         return True, f"Cloud draft updated. Replaced {deleted} previous draft row(s)."
     return True, "Cloud draft saved. You can reopen this PM/division/week later from any computer."
 
-def report_records_for_sheet(report: dict, input_rows: list[dict], competition: str) -> list[dict]:
+def append_report_to_sheet(report: dict, input_rows: list[dict], competition: str, replace_existing: bool = True) -> tuple[int, int]:
+    worksheet = ensure_worksheet_safe(get_spreadsheet(), st.secrets.get("WORKSHEET_NAME", "reports"), SHEET_COLUMNS)
+    deleted = 0
+    if replace_existing:
+        rows = worksheet.get_all_records()
+        to_delete = []
+        target_comp, target_pm, target_div, target_week = str(competition).strip().lower(), str(report.get("pm_name", "")).strip().lower(), str(report.get("division", "")).strip().lower(), str(report.get("week_start", "")).strip()
+        for offset, row in enumerate(rows, start=2):
+            if (str(row.get("competition", "")).strip().lower() == target_comp and 
+                str(row.get("pm_name", "")).strip().lower() == target_pm and 
+                str(row.get("division", "")).strip().lower() == target_div and 
+                str(row.get("week_start", "")).strip() == target_week):
+                to_delete.append(offset)
+        for row_number in reversed(to_delete):
+            worksheet.delete_rows(row_number)
+        deleted = len(to_delete)
+
     valid_input_rows = [r for r in input_rows if str(r.get("member_name", "")).strip()]
     records = []
     for idx, record in enumerate(report.get("records", [])):
@@ -288,140 +265,13 @@ def report_records_for_sheet(report: dict, input_rows: list[dict], competition: 
         if isinstance(row.get("flags"), list):
             row["flags"] = json.dumps(row["flags"], ensure_ascii=False)
         records.append(row)
-    return records
-
-def delete_existing_rows(worksheet, *, competition: str, pm_name: str, division: str, week_start: str) -> int:
-    rows = worksheet.get_all_records()
-    to_delete = []
-    target_comp, target_pm, target_div, target_week = str(competition).strip().lower(), str(pm_name).strip().lower(), str(division).strip().lower(), str(week_start).strip()
-    for offset, row in enumerate(rows, start=2):
-        if (str(row.get("competition", "")).strip().lower() == target_comp and 
-            str(row.get("pm_name", "")).strip().lower() == target_pm and 
-            str(row.get("division", "")).strip().lower() == target_div and 
-            str(row.get("week_start", "")).strip() == target_week):
-            to_delete.append(offset)
-    for row_number in reversed(to_delete):
-        worksheet.delete_rows(row_number)
-    return len(to_delete)
-
-def append_report_to_sheet(report: dict, input_rows: list[dict], competition: str, replace_existing: bool = True) -> tuple[int, int]:
-    worksheet = get_worksheet()
-    headers = ensure_sheet_headers(worksheet)
-    deleted = 0
-    if replace_existing:
-        deleted = delete_existing_rows(worksheet, competition=competition, pm_name=report.get("pm_name", ""), division=report.get("division", ""), week_start=report.get("week_start", ""))
-        headers = ensure_sheet_headers(worksheet)
-    records = report_records_for_sheet(report, input_rows, competition)
-    values = [[row.get(header, "") for header in headers] for row in records]
+        
+    values = [[row.get(header, "") for header in SHEET_COLUMNS] for row in records]
     if values:
         worksheet.append_rows(values, value_input_option="USER_ENTERED")
     return len(values), deleted
 
-@st.cache_data(ttl=60, show_spinner=False)
-def load_content_calendar(_client, force_refresh=0) -> pd.DataFrame:
-    ws = get_or_create_worksheet("content_calendar", CONTENT_CAL_COLUMNS, rows=2000)
-    records = ws.get_all_records()
-    df = pd.DataFrame(records) if records else pd.DataFrame(columns=CONTENT_CAL_COLUMNS)
-    for col in CONTENT_CAL_COLUMNS:
-        if col not in df.columns: df[col] = ""
-    return df
-
-def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: str, target_month: str, target_year: int):
-    ws = get_or_create_worksheet("content_calendar", CONTENT_CAL_COLUMNS, rows=2000)
-    headers = ensure_headers(ws, CONTENT_CAL_COLUMNS)
-    df_all = pd.DataFrame(ws.get_all_records())
-    if df_all.empty: df_all = pd.DataFrame(columns=headers)
-    for col in headers:
-        if col not in df_all.columns: df_all[col] = ""
-
-    if not df_all.empty:
-        df_all["temp_dt"] = pd.to_datetime(df_all["planned_date"], errors="coerce")
-        mask = ((df_all["mission"] == mission) & (df_all["cycle"] == cycle) & 
-                (df_all["temp_dt"].dt.month == MONTHS_LIST.index(target_month) + 1) & 
-                (df_all["temp_dt"].dt.year == target_year))
-        df_all = df_all[~mask].drop(columns=["temp_dt"])
-
-    now_str = datetime.utcnow().isoformat() + "Z"
-    clean_edited = []
-    for _, row in df_edited.iterrows():
-        r = row.to_dict()
-        if not r.get("content_title") and not r.get("description") and r.get("platform") != "No post day":
-            continue
-        if not r.get("content_id"):
-            r["content_id"] = f"{mission}_{cycle}_{r.get('planned_date','')}_{uuid.uuid4().hex[:6]}"
-            r["created_at"] = now_str
-        r.update({"mission": mission, "cycle": cycle, "month": target_month, "updated_at": now_str})
-        if r.get("status") == "Posted":
-            if not r.get("actual_posted_date") or r.get("actual_posted_date") == "NaT":
-                r["actual_posted_date"] = date.today().strftime("%Y-%m-%d")
-            if not r.get("marked_done_at"):
-                r["marked_done_at"] = now_str
-        else:
-            if r.get("actual_posted_date"): r["actual_posted_date"] = ""
-            if r.get("marked_done_at"): r["marked_done_at"] = ""
-        clean_edited.append(r)
-        
-    df_new = pd.DataFrame(clean_edited)
-    if not df_new.empty:
-        for col in headers:
-            if col not in df_new.columns: df_new[col] = ""
-        df_all = pd.concat([df_all, df_new], ignore_index=True)
-        
-    df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
-    ws.clear()
-    ws.append_rows([headers] + df_all[headers].values.tolist(), value_input_option="USER_ENTERED")
-
-@st.cache_data(ttl=60, show_spinner=False)
-def load_finance_sheet(_client, sheet_name: str, headers: list[str]) -> pd.DataFrame:
-    ws = get_or_create_worksheet(sheet_name, headers, rows=1000)
-    records = ws.get_all_records()
-    df = pd.DataFrame(records) if records else pd.DataFrame(columns=headers)
-    for col in headers:
-        if col not in df.columns: df[col] = ""
-    return df
-
-def save_finance_sheet(_client, sheet_name: str, df_edited: pd.DataFrame, headers: list[str], id_col: str, mission: str, cycle: str):
-    ws = get_or_create_worksheet(sheet_name, headers, rows=1000)
-    df_all = pd.DataFrame(ws.get_all_records())
-    if df_all.empty: df_all = pd.DataFrame(columns=headers)
-    for col in headers:
-        if col not in df_all.columns: df_all[col] = ""
-
-    if not df_all.empty and "mission" in df_all.columns and "cycle" in df_all.columns:
-        mask = (df_all["mission"] == mission) & (df_all["cycle"] == cycle)
-        df_all = df_all[~mask]
-
-    now_str = datetime.utcnow().isoformat() + "Z"
-    clean_edited = []
-    for _, row in df_edited.iterrows():
-        r = row.to_dict()
-        if not str(r.get(id_col, "")) and not str(r.get("event_name", "")) and not str(r.get("amount", "")) and not str(r.get("goal_name", "")):
-            continue
-        if not str(r.get(id_col, "")):
-            r[id_col] = f"{mission}_{cycle}_{uuid.uuid4().hex[:8]}"
-            r["created_at"] = now_str
-        r.update({"mission": mission, "cycle": cycle, "updated_at": now_str})
-        clean_edited.append(r)
-        
-    df_new = pd.DataFrame(clean_edited)
-    if not df_new.empty:
-        for col in headers:
-            if col not in df_new.columns: df_new[col] = ""
-        df_all = pd.concat([df_all, df_new], ignore_index=True)
-        
-    df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>", "False"], "")
-    ws.clear()
-    ws.append_rows([headers] + df_all[headers].values.tolist(), value_input_option="USER_ENTERED")
-
-# --- PLANNER HELPERS ---
-def status_color(status):
-    colors = {"Not Started": "#4b5563", "In Progress": "#3b82f6", "Blocked": "#ef4444", "In Review": "#a855f7", "Completed": "#22c55e", "Cancelled": "#6b7280"}
-    return colors.get(status, "#4b5563")
-
-def priority_color(priority):
-    colors = {"Low": "#6b7280", "Medium": "#3b82f6", "High": "#f97316", "Critical": "#ef4444"}
-    return colors.get(priority, "#6b7280")
-
+# --- DATA SAVE HELPERS ---
 def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col):
     for idx, row in edited_df.iterrows():
         if not row.get(id_col) or pd.isna(row.get(id_col)) or str(row.get(id_col)).strip() == "":
@@ -435,24 +285,17 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col):
             dd = pd.to_datetime(row.get("due_date"), errors="coerce")
             cd = pd.to_datetime(row.get("completed_date"), errors="coerce")
             status = row.get("status", "")
-            
-            delay_flag = False
-            delay_days = 0
+            delay_flag, delay_days = False, 0
             if pd.notnull(dd):
                 if status not in ["Completed", "Cancelled"] and today > dd:
-                    delay_flag = True
-                    delay_days = (today - dd).days
+                    delay_flag, delay_days = True, (today - dd).days
                 elif status == "Completed" and pd.notnull(cd) and cd > dd:
-                    delay_flag = True
-                    delay_days = (cd - dd).days
-                    
+                    delay_flag, delay_days = True, (cd - dd).days
             edited_df.at[idx, "delay_flag"] = delay_flag
             edited_df.at[idx, "delay_days"] = delay_days
     
     for c in cols:
-        if c not in edited_df.columns:
-            edited_df[c] = ""
-    
+        if c not in edited_df.columns: edited_df[c] = ""
     for col in edited_df.columns:
         if "date" in col.lower() and col not in ["created_at", "updated_at"]:
             edited_df[col] = pd.to_datetime(edited_df[col], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
@@ -473,86 +316,41 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col):
     if not merged_df.empty:
         ws.update("A2", merged_df.values.tolist())
 
-def update_gantt_links(sh, edited_tasks, df_links):
-    links_to_save = []
-    for _, task in edited_tasks.iterrows():
-        if task.get("linked_gantt_task"):
-            links_to_save.append({
-                "link_id": f"link_{task['task_id']}",
-                "mission": task.get("mission", ""),
-                "cycle": task.get("cycle", ""),
-                "planner_task_id": task["task_id"],
-                "planner_task_title": task.get("title", ""),
-                "linked_gantt_task": task["linked_gantt_task"],
-                "linked_gantt_phase": task.get("linked_gantt_phase", ""),
-                "blocks_gantt_start": task.get("blocks_gantt_start", False),
-                "blocks_gantt_completion": task.get("blocks_gantt_completion", False),
-                "delay_flag": task.get("delay_flag", False),
-                "delay_days": task.get("delay_days", 0),
-                "status": task.get("status", ""),
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-            
-    if links_to_save:
-        new_links_df = pd.DataFrame(links_to_save)
-        for c in GANTT_TASK_LINKS_COLS:
-            if c not in new_links_df.columns:
-                new_links_df[c] = ""
-        new_links_df = new_links_df[GANTT_TASK_LINKS_COLS]
-        
-        if not df_links.empty:
-            merged_links = df_links[~df_links["link_id"].isin(new_links_df["link_id"])].copy()
-            merged_links = pd.concat([merged_links, new_links_df], ignore_index=True)
-        else:
-            merged_links = new_links_df
-            
-        merged_links.fillna("", inplace=True)
-        ws_links = ensure_worksheet_safe(sh, "gantt_task_links", GANTT_TASK_LINKS_COLS)
-        ws_links.clear()
-        ws_links.update("1:1", [merged_links.columns.values.tolist()])
-        if not merged_links.empty:
-            ws_links.update("A2", merged_links.values.tolist())
-
-def queue_notification(sh, task_row, df_notif):
-    new_notif = pd.DataFrame([{
-        "notification_id": str(uuid.uuid4()),
-        "task_id": task_row["task_id"],
-        "notification_type": "Reminder",
-        "recipient": task_row.get("assigned_to", ""),
-        "cc_people": task_row.get("cc_people", ""),
-        "subject": f"Task Reminder: {task_row.get('title', 'Unknown')}",
-        "message": f"Please update task {task_row.get('title', 'Unknown')}. Currently: {task_row.get('status', 'Unknown')}.",
-        "status": "Queued",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }])
-    save_planner_data(sh, new_notif, df_notif, PLANNER_NOTIFICATIONS_COLS, "planner_notifications_queue", "notification_id")
-
+# --- DIALOGS (POPUPS) FOR CLEANER CREATION ---
 @st.dialog("➕ Create New Task")
-def create_new_task_modal(default_mission, default_cycle, default_division, member_opts, df_tasks, sh):
+def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb):
     st.markdown("Fill out the details to assign a new task to your board.")
     with st.form("new_task_form"):
         title = st.text_input("Task Title *")
         desc = st.text_area("Description")
         
-        col1, col2 = st.columns(2)
-        assignee = col1.selectbox("Assign To", ["Unassigned"] + member_opts, help="Start typing a name to search the directory.")
-        bucket = col2.selectbox("Bucket", ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"])
+        c1, c2 = st.columns(2)
+        assignee = c1.selectbox("Assign To", ["Unassigned"] + members, help="Start typing a name to search the directory.")
         
-        col3, col4 = st.columns(2)
-        due_date = col3.date_input("Due Date", value=None)
-        priority = col4.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
+        # Display contact info if assigned
+        if assignee != "Unassigned" and not df_memb.empty:
+            mem_row = df_memb[df_memb['member_name'] == assignee]
+            if not mem_row.empty:
+                em = mem_row.iloc[0].get('email', 'No email')
+                ro = mem_row.iloc[0].get('role', 'No role')
+                c1.caption(f"📧 {em} | 🛠 {ro}")
+                
+        bucket = c2.selectbox("Bucket", ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"])
+        
+        c3, c4 = st.columns(2)
+        due_date = c3.date_input("Due Date", value=None)
+        priority = c4.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
         
         submit = st.form_submit_button("☑ Create Task", type="primary", use_container_width=True)
-        
         if submit:
             if not title:
                 st.error("⚠ Title is required.")
             else:
                 new_task = pd.DataFrame([{
                     "task_id": str(uuid.uuid4()),
-                    "mission": default_mission,
-                    "cycle": default_cycle,
-                    "division": default_division,
+                    "mission": mission,
+                    "cycle": cycle,
+                    "division": division,
                     "bucket": bucket,
                     "title": title,
                     "description": desc,
@@ -566,66 +364,217 @@ def create_new_task_modal(default_mission, default_cycle, default_division, memb
                 save_planner_data(sh, new_task, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
                 st.rerun()
 
+@st.dialog("➕ Schedule Content")
+def create_content_dialog(mission, cycle, month_name, year_val, df_content, sh):
+    st.markdown("Draft new content for your social or outreach pipelines.")
+    with st.form("new_content_form"):
+        title = st.text_input("Content Title *")
+        c1, c2 = st.columns(2)
+        platform = c1.selectbox("Platform", list(PLATFORM_COLORS.keys()))
+        status = c2.selectbox("Status", list(STATUS_SYMBOLS.keys()))
+        
+        c3, c4 = st.columns(2)
+        try: m_int = MONTHS_LIST.index(month_name) + 1
+        except: m_int = date.today().month
+        y_int = int(year_val) if str(year_val).isdigit() else date.today().year
+        
+        p_date = c3.date_input("Planned Date", value=date(y_int, m_int, 1))
+        ctype = c4.text_input("Content Type (Reel, Post, etc.)")
+        
+        desc = st.text_area("Description / Copy")
+        owner = st.text_input("Owner")
+        
+        submit = st.form_submit_button("☑ Schedule Content", type="primary", use_container_width=True)
+        if submit:
+            if not title: st.error("⚠ Title is required.")
+            else:
+                new_row = pd.DataFrame([{
+                    "content_id": str(uuid.uuid4()),
+                    "mission": mission,
+                    "cycle": cycle,
+                    "month": month_name,
+                    "planned_date": p_date.strftime("%Y-%m-%d") if p_date else "",
+                    "platform": platform,
+                    "content_title": title,
+                    "description": desc,
+                    "content_type": ctype,
+                    "owner": owner,
+                    "status": status,
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }])
+                save_planner_data(sh, new_row, df_content, CONTENT_CAL_COLUMNS, "content_calendar", "content_id")
+                st.rerun()
+
+@st.dialog("➕ Plan Fundraiser Event")
+def create_fundraiser_dialog(mission, cycle, df_events, sh):
+    with st.form("new_event_form"):
+        name = st.text_input("Event Name *")
+        c1, c2 = st.columns(2)
+        etype = c1.selectbox("Event Type", ["Food Sale", "Raffle", "Sponsorship", "Donation", "Venue Fundraiser", "Online Campaign", "Community Event", "Other"])
+        status = c2.selectbox("Status", ["Planned", "In Progress", "Completed", "Cancelled", "Delayed", "Needs Follow-Up"])
+        
+        c3, c4 = st.columns(2)
+        pdate = c3.date_input("Planned Date", value=date.today())
+        loc = c4.text_input("Location")
+        
+        c5, c6 = st.columns(2)
+        exp_gross = c5.number_input("Expected Gross $", min_value=0.0)
+        exp_costs = c6.number_input("Expected Costs $", min_value=0.0)
+        
+        submit = st.form_submit_button("☑ Create Event", type="primary", use_container_width=True)
+        if submit:
+            if not name: st.error("⚠ Event Name is required.")
+            else:
+                new_event = pd.DataFrame([{
+                    "event_id": str(uuid.uuid4()),
+                    "mission": mission,
+                    "cycle": cycle,
+                    "event_name": name,
+                    "event_type": etype,
+                    "planned_date": pdate.strftime("%Y-%m-%d") if pdate else "",
+                    "location": loc,
+                    "status": status,
+                    "expected_gross_revenue": exp_gross,
+                    "expected_expenses": exp_costs,
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }])
+                save_planner_data(sh, new_event, df_events, EVENTS_HEADERS, "fundraising_events", "event_id")
+                st.rerun()
+
+@st.dialog("➕ Log Income / Transaction")
+def create_transaction_dialog(mission, cycle, df_txns, df_events, sh):
+    event_opts = [str(x) for x in df_events["event_name"].dropna().unique()] if not df_events.empty else []
+    with st.form("new_txn_form"):
+        evt = st.selectbox("Linked Event", ["Unlinked"] + event_opts)
+        c1, c2 = st.columns(2)
+        src_type = c1.selectbox("Source Type", ["Individual", "Sponsor", "Ticket Sale", "Raffle Sale", "Food Sale", "Online Donation", "Cash Donation", "Other"])
+        src_name = c2.text_input("Source Name (Optional)")
+        
+        c3, c4 = st.columns(2)
+        method = c3.selectbox("Payment Method", ["ATH Movil", "Cash", "PayPal", "Check", "Bank Transfer", "Card", "Other"])
+        amt = c4.number_input("Amount $ *", min_value=0.01)
+        
+        tdate = st.date_input("Transaction Date", value=date.today())
+        
+        if st.form_submit_button("☑ Save Transaction", type="primary", use_container_width=True):
+            name_to_id = dict(zip(df_events["event_name"], df_events["event_id"])) if not df_events.empty else {}
+            eid = name_to_id.get(evt, "") if evt != "Unlinked" else ""
+            
+            new_t = pd.DataFrame([{
+                "transaction_id": str(uuid.uuid4()),
+                "event_id": eid,
+                "event_name": evt if evt != "Unlinked" else "",
+                "mission": mission,
+                "cycle": cycle,
+                "source_type": src_type,
+                "source_name": src_name,
+                "payment_method": method,
+                "amount": amt,
+                "transaction_date": tdate.strftime("%Y-%m-%d") if tdate else "",
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }])
+            save_planner_data(sh, new_t, df_txns, TRANSACTIONS_HEADERS, "fundraising_transactions", "transaction_id")
+            st.rerun()
+
+@st.dialog("➕ Log Expense")
+def create_expense_dialog(mission, cycle, df_exps, df_events, sh):
+    event_opts = [str(x) for x in df_events["event_name"].dropna().unique()] if not df_events.empty else []
+    with st.form("new_exp_form"):
+        evt = st.selectbox("Linked Event", ["Unlinked"] + event_opts)
+        c1, c2 = st.columns(2)
+        cat = c1.selectbox("Category", ["Food / Materials", "Venue", "Marketing", "Equipment", "Transportation", "Permit", "Prize", "Supplies", "Other"])
+        vendor = c2.text_input("Vendor")
+        
+        item = st.text_input("Item Description")
+        
+        c3, c4 = st.columns(2)
+        amt = c3.number_input("Amount Spent $ *", min_value=0.01)
+        edate = c4.date_input("Expense Date", value=date.today())
+        
+        if st.form_submit_button("☑ Save Expense", type="primary", use_container_width=True):
+            name_to_id = dict(zip(df_events["event_name"], df_events["event_id"])) if not df_events.empty else {}
+            eid = name_to_id.get(evt, "") if evt != "Unlinked" else ""
+            
+            new_e = pd.DataFrame([{
+                "expense_id": str(uuid.uuid4()),
+                "event_id": eid,
+                "event_name": evt if evt != "Unlinked" else "",
+                "mission": mission,
+                "cycle": cycle,
+                "category": cat,
+                "vendor": vendor,
+                "item_description": item,
+                "amount": amt,
+                "expense_date": edate.strftime("%Y-%m-%d") if edate else "",
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }])
+            save_planner_data(sh, new_e, df_exps, EXPENSES_HEADERS, "fundraising_expenses", "expense_id")
+            st.rerun()
+
+def priority_color(priority):
+    colors = {"Low": "#6b7280", "Medium": "#3b82f6", "High": "#f97316", "Critical": "#ef4444"}
+    return colors.get(priority, "#6b7280")
+
+def status_color(status):
+    colors = {"Not Started": "#4b5563", "In Progress": "#3b82f6", "Blocked": "#ef4444", "In Review": "#a855f7", "Completed": "#22c55e", "Cancelled": "#6b7280"}
+    return colors.get(status, "#4b5563")
+
 # -----------------------------------------------------------------------------
 # SIDEBAR NAVIGATION & ROUTER
 # -----------------------------------------------------------------------------
+client = get_spreadsheet()
+if not client:
+    st.error("Google Sheets Database unavailable. Check st.secrets.")
+    st.stop()
+
+# Load planner members globally so we can use them in sidebar
+ws_memb, df_memb = get_worksheet_df(client, "planner_members", PLANNER_MEMBERS_COLS)
+member_opts = df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else []
+
 st.sidebar.header("⌖ Navigation")
 current_page = st.sidebar.radio("Go to", ["▦ Weekly Performance Report", "◫ Content Calendar", "$ Fundraising & Finance", "▦ Planner"])
 
-sheet_ok, sheet_msg = google_sheet_ready()
-if "force_refresh" not in st.session_state:
-    st.session_state.force_refresh = 0
-
-client = get_spreadsheet()
-
-# Fetch planner members globally so it can be used in sidebars if needed
-ws_memb, df_memb = get_worksheet_df(client, "planner_members", PLANNER_MEMBERS_COLS) if client else (None, pd.DataFrame(columns=PLANNER_MEMBERS_COLS))
-member_opts = df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else []
+# Retrieve competition from session state or default
+if "competition" not in st.session_state:
+    st.session_state.competition = "Mars"
+competition = st.session_state.competition
 
 with st.sidebar:
     st.divider()
+    st.header("🔍 Context Filters")
+    st.caption("These filters control what you see and create.")
     
-    # Render specific filters for the Planner
-    if current_page == "▦ Planner":
-        st.header("▦ Planner Setup")
+    if current_page == "▦ Weekly Performance Report":
+        # Handled in the main body for the reporter logic
+        st.info("Filters for the weekly report are located on the main page.")
         
-        default_mission_idx = 0
-        if st.session_state.get("competition") == "Mars": default_mission_idx = 1
-        elif st.session_state.get("competition") == "Luna": default_mission_idx = 2
+    elif current_page == "▦ Planner":
+        plan_mission = st.selectbox("Mission", ["General", "Mars", "Luna"], index=0)
+        plan_cycle = st.selectbox("Cycle", DYNAMIC_CYCLES, index=1)
+        plan_division = st.selectbox("Division", ["All"] + list(DIVISIONS), index=0)
+        plan_assignee = st.selectbox("Assigned To", ["All"] + member_opts)
         
-        plan_mission = st.selectbox("Mission Filter", ["General", "Mars", "Luna"], index=default_mission_idx)
-        plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
-        plan_division = st.selectbox("Division Filter", list(DIVISIONS.keys()), index=0)
-        plan_assignee = st.selectbox("Assignee Filter", ["All"] + member_opts, help="Filter the board for a specific team member.")
-        st.divider()
+    elif current_page == "◫ Content Calendar":
+        cal_mission = st.selectbox("Mission", ["General", "Mars", "Luna"], index=0)
+        cal_cycle = st.selectbox("Cycle", DYNAMIC_CYCLES, index=1)
+        cal_month = st.selectbox("Month", MONTHS_LIST, index=date.today().month - 1)
+        cal_year = st.selectbox("Year", [date.today().year - 1, date.today().year, date.today().year + 1, date.today().year + 2], index=1)
         
+    elif current_page == "$ Fundraising & Finance":
+        fin_mission = st.selectbox("Mission", ["General", "Mars", "Luna"], index=0)
+        fin_cycle = st.selectbox("Cycle", DYNAMIC_CYCLES, index=1)
+        fin_month = st.selectbox("Month", MONTHS_LIST, index=date.today().month - 1)
+        fin_year = st.selectbox("Year", [date.today().year - 1, date.today().year, date.today().year + 1, date.today().year + 2], index=1)
+
+    st.divider()
     st.header("⌖ Data Sync")
     if st.button("↻ Force Refresh Google Sheets", use_container_width=True):
-        st.session_state.force_refresh += 1
         st.cache_data.clear()
         st.rerun()
-    if sheet_ok:
-        st.caption(f"Status: {sheet_msg}")
-    else:
-        st.error(sheet_msg)
-        st.stop()
-
-# -----------------------------------------------------------------------------
-# EARLY STATE INITIALIZATION 
-# -----------------------------------------------------------------------------
-if "comp_radio" not in st.session_state:
-    st.session_state.comp_radio = "Mars Mission"
-    
-competition = "Mars" if "Mars" in st.session_state.comp_radio else ("Luna" if "Luna" in st.session_state.comp_radio else "General")
-st.session_state.competition = competition
-
-if competition == "Luna":
-    luna_allowed = ["electrical", "vehicle", "software"]
-    active_divisions = [d for d in DIVISIONS if any(k in d.lower() for k in luna_allowed)]
-    if not active_divisions:
-        active_divisions = ["Electrical", "Vehicle Design", "Software"]
-else:
-    active_divisions = DIVISIONS
 
 # -----------------------------------------------------------------------------
 # DYNAMIC VIBE THEME ENGINE
@@ -730,7 +679,6 @@ st.markdown(
         display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); margin: 0 8px 8px 0; color: #f8fafc; font-size: 13px; font-weight: 750;
     }}
     .dot {{ width: 10px; height: 10px; border-radius: 999px; display: inline-block; }}
-    .metric-note {{ color: #94a3b8; font-size: 13px; margin-top: 10px;}}
     
     h1, h2, h3, p, label, span, div {{ text-shadow: none; color: var(--ink); }}
     
@@ -744,7 +692,7 @@ st.markdown(
     .stButton > button:hover {{ background: rgba(255,255,255,0.1) !important; border-color: rgba(255,255,255,0.3) !important; color: #ffffff !important; }}
     
     button[kind="primary"], [data-testid="stFormSubmitButton"] > button {{
-        background: var(--primary) !important; color: var(--primary-text) !important; box-shadow: 0 8px 20px var(--primary-shadow) !important; border: 1px solid rgba(255,255,255,0.1) !important; border-radius: 12px !important; font-weight: 800 !important; transition: all 0.3s ease !important;
+        background: var(--primary) !important; color: var(--primary-text) !important; box-shadow: 0 8px 20px var(--primary-shadow) !important; border: 1px solid rgba(255,255,255,0.1) !important; border-radius: 12px !important; font-weight: 800 !important; transition: all 0.3s ease !important; text-transform: uppercase; letter-spacing: 1px;
     }}
     button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button * {{ color: var(--primary-text) !important; }}
     button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover {{ background: var(--primary-hover) !important; transform: translateY(-2px); }}
@@ -763,33 +711,15 @@ st.markdown(
     .cal-day.empty {{ background: transparent; border: 1px dashed rgba(255,255,255,0.05); }}
     .cal-date {{ font-weight: 800; color: #cbd5e1; font-size: 14px; margin-bottom: 4px; }}
     .cal-badge {{ font-size: 11px; padding: 4px 6px; border-radius: 4px; color: #000000; font-weight: 700; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    
-    .kpi {{ padding: 24px; border-radius: 16px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); margin-bottom: 24px; }}
-    .kpi-label {{ color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }}
-    .kpi-value {{ color:#ffffff; font-size:36px; font-weight:950; letter-spacing:-.06em; margin-top:8px; }}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-def plotly_theme(fig: go.Figure) -> go.Figure:
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#f8fafc"),
-        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(255,255,255,.10)", borderwidth=1),
-        margin=dict(l=20, r=20, t=40, b=20),
-    )
-    fig.update_xaxes(gridcolor="rgba(255,255,255,.05)", zerolinecolor="rgba(255,255,255,.10)")
-    fig.update_yaxes(gridcolor="rgba(255,255,255,.05)", zerolinecolor="rgba(255,255,255,.10)")
-    return fig
-
-
+# -----------------------------------------------------------------------------
+# PAGE: WEEKLY PERFORMANCE REPORT
+# -----------------------------------------------------------------------------
 if current_page == "▦ Weekly Performance Report":
-    # -----------------------------------------------------------------------------
-    # PAGE: WEEKLY PERFORMANCE REPORT
-    # -----------------------------------------------------------------------------
     st.markdown(
         f"""
         <div class="hero">
@@ -809,10 +739,9 @@ if current_page == "▦ Weekly Performance Report":
         """, unsafe_allow_html=True
     )
 
-    legend_html = "".join(
-        f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>'
-        for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions
-    )
+    active_divisions = DIVISIONS if competition != "Luna" else [d for d in DIVISIONS if any(k in d.lower() for k in ["electrical", "vehicle", "software"])]
+
+    legend_html = "".join(f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>' for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions)
     st.markdown(f'<div class="glass"><b>Official Division Legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="glass" style="padding: 20px 28px;">', unsafe_allow_html=True)
@@ -820,33 +749,14 @@ if current_page == "▦ Weekly Performance Report":
     st.radio("Competition Program", options=["Mars Mission", "Luna Mission"], key="comp_radio", horizontal=True, label_visibility="collapsed")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.sidebar:
-        st.header("Report setup")
-        pm_name = st.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
-        division = st.selectbox("Division", active_divisions, index=0)
-
-        st.divider()
-        st.subheader("Week Selection")
-        st.caption("Pick the Monday-Friday work week being reported.")
-        
-        if "selected_date" not in st.session_state:
-            st.session_state.selected_date = today_monday()
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("◀ Prev"): st.session_state.selected_date -= timedelta(weeks=1)
-        with c2:
-            if st.button("■ This", type="primary", use_container_width=True): st.session_state.selected_date = today_monday()
-        with c3:
-            if st.button("Next ▶"): st.session_state.selected_date += timedelta(weeks=1)
-                
-        cal_date = st.date_input("Calendar Date", value=st.session_state.selected_date)
-        st.session_state.selected_date = cal_date
-        week_start = monday_for(cal_date)
-        week_end = week_start + timedelta(days=4)
-        st.info(f"Selected work week: **{week_range_label(week_start)}**")
-
-    # BASE DATA INITIALIZATION
+    c1, c2, c3 = st.columns(3)
+    pm_name = c1.text_input("PM name", placeholder="Ej. Alejandro / PM Robotic Arm")
+    division = c2.selectbox("Division", active_divisions, index=0)
+    
+    if "selected_date" not in st.session_state: st.session_state.selected_date = today_monday()
+    cal_date = c3.date_input("Week Starting", value=st.session_state.selected_date)
+    week_start = monday_for(cal_date)
+    
     init_df = pd.DataFrame(empty_input_rows())
     if "hours_invested" not in init_df.columns: init_df["hours_invested"] = 0
     if "communication_score" not in init_df.columns: init_df["communication_score"] = 0.0
@@ -856,18 +766,16 @@ if current_page == "▦ Weekly Performance Report":
         init_df = pd.concat([init_df, pad], ignore_index=True)
 
     current_draft_key = f"{competition}_{pm_name}_{division}_{week_start}"
-    draft_path = get_draft_path(competition, pm_name, division, week_start)
-
+    
     if "tracker_df" not in st.session_state or st.session_state.get("last_draft_key") != current_draft_key:
         draft_records = load_cloud_draft(competition, pm_name, division, week_start) if pm_name.strip() else None
         if draft_records is not None:
             st.session_state.tracker_df = normalize_tracker_df(draft_records, init_df)
-            st.info(f"ⓘ Loaded saved cloud draft for {competition}, {division}, {week_range_label(week_start)}.")
         else:
             st.session_state.tracker_df = init_df.copy()
         st.session_state["last_draft_key"] = current_draft_key
 
-    # --- PLANNER INTEGRATION (LOAD TASKS) ---
+    # PLANNER INTEGRATION
     st.markdown('<div class="glass">', unsafe_allow_html=True)
     with st.expander("▦ Load Tasks from Planner"):
         st.markdown("Pull assigned tasks from the Planner and automatically build member performance rows for this week.")
@@ -876,13 +784,10 @@ if current_page == "▦ Weekly Performance Report":
             if not df_tasks.empty:
                 mask = (df_tasks["division"] == division) & (df_tasks["status"] != "Cancelled")
                 filtered = df_tasks[mask].copy()
-                
                 ws_date = pd.to_datetime(week_start)
                 we_date = ws_date + timedelta(days=6)
-                
                 filtered["due_date_dt"] = pd.to_datetime(filtered["due_date"], errors="coerce")
                 filtered["week_start_dt"] = pd.to_datetime(filtered["week_start"], errors="coerce")
-                
                 week_mask = (filtered["week_start_dt"] == ws_date) | ((filtered["due_date_dt"] >= ws_date) & (filtered["due_date_dt"] <= we_date))
                 filtered = filtered[week_mask]
                 
@@ -892,54 +797,39 @@ if current_page == "▦ Weekly Performance Report":
                     for m in members:
                         if not m: continue
                         m_tasks = filtered[filtered["assigned_to"] == m]
-                        
-                        tasks_assigned = len(m_tasks)
                         completed_tasks = m_tasks[m_tasks["status"] == "Completed"]
-                        tasks_completed = len(completed_tasks)
                         
                         late_tasks, on_time_tasks = 0, 0
                         for _, t in completed_tasks.iterrows():
                             cd = pd.to_datetime(t["completed_date"], errors="coerce")
                             dd = pd.to_datetime(t["due_date"], errors="coerce")
-                            if pd.notnull(cd) and pd.notnull(dd) and cd > dd:
-                                late_tasks += 1
-                            else:
-                                on_time_tasks += 1
+                            if pd.notnull(cd) and pd.notnull(dd) and cd > dd: late_tasks += 1
+                            else: on_time_tasks += 1
                                 
                         blocked_tasks = len(m_tasks[(m_tasks["status"] == "Blocked") | (m_tasks["delay_flag"].astype(str).str.lower() == "true")])
-                        notes = " | ".join(m_tasks["title"].tolist())
-                        
                         new_rows.append({
-                            "member_name": m, "role": "Member", "tasks_assigned": tasks_assigned, "hours_invested": 0,
-                            "tasks_completed": tasks_completed, "tasks_on_time": on_time_tasks, "tasks_late": late_tasks,
+                            "member_name": m, "role": "Member", "tasks_assigned": len(m_tasks), "hours_invested": 0,
+                            "tasks_completed": len(completed_tasks), "tasks_on_time": on_time_tasks, "tasks_late": late_tasks,
                             "blocked_tasks": blocked_tasks, "avg_quality_1_to_5": 3, "meetings_required": 1, "meetings_attended": 1,
-                            "pm_confidence_1_to_5": 3, "communication_score": 3, "notes": notes[:200]
+                            "pm_confidence_1_to_5": 3, "communication_score": 3, "notes": " | ".join(m_tasks["title"].tolist())[:200]
                         })
                     
                     if new_rows:
                         new_df = pd.DataFrame(new_rows)
                         for col in init_df.columns:
                             if col not in new_df.columns: new_df[col] = "" if col in ["member_name", "role", "notes"] else 0
-                        
                         current = st.session_state.tracker_df
-                        current = current[current["member_name"].astype(str).str.strip() != ""] # Remove blanks
-                        
+                        current = current[current["member_name"].astype(str).str.strip() != ""]
                         merged = pd.concat([current, new_df]).drop_duplicates(subset=["member_name"], keep="last")
-                        
                         if len(merged) < 50:
                             pad = pd.DataFrame([{c: ("" if c in ["member_name", "role", "notes"] else 0) for c in init_df.columns} for _ in range(50 - len(merged))])
                             merged = pd.concat([merged, pad], ignore_index=True)
-                            
                         st.session_state.tracker_df = merged.reset_index(drop=True)
                         st.success("ⓘ Planner tasks merged successfully! Review them in the tabs below.")
                         st.rerun()
-                else:
-                    st.warning("⚠ No Planner tasks found for this division and week.")
-            else:
-                st.warning("⚠ Planner tasks sheet is empty.")
+                else: st.warning("⚠ No Planner tasks found for this division and week.")
+            else: st.warning("⚠ Planner tasks sheet is empty.")
 
-    st.subheader("Member weekly rows")
-    
     col_config_base = {
         "member_name": st.column_config.TextColumn("Member Name", help="Required for row to count"),
         "role": st.column_config.TextColumn("Role / Subteam", help="What subteam or functional role does this member have?"),
@@ -961,57 +851,25 @@ if current_page == "▦ Weekly Performance Report":
 
     with st.form("weekly_data_form"):
         tab1, tab2, tab3 = st.tabs(["◈ 1. Assignment", "◈ 2. Execution", "◈ 3. Performance"])
+        with tab1: df1 = st.data_editor(st.session_state.tracker_df[["member_name", "role", "tasks_assigned", "hours_invested"]], key="editor_tab1", use_container_width=True, hide_index=True, height=480, column_config=col_config_base)
+        with tab2: df2 = st.data_editor(st.session_state.tracker_df[["member_name", "tasks_completed", "tasks_on_time", "tasks_late", "blocked_tasks"]], key="editor_tab2", use_container_width=True, hide_index=True, height=480, column_config=col_config_locked)
+        with tab3: df3 = st.data_editor(st.session_state.tracker_df[["member_name", "avg_quality_1_to_5", "meetings_required", "meetings_attended", "pm_confidence_1_to_5", "communication_score", "notes"]], key="editor_tab3", use_container_width=True, hide_index=True, height=480, column_config=col_config_locked)
 
-        with tab1:
-            df1 = st.data_editor(
-                st.session_state.tracker_df[["member_name", "role", "tasks_assigned", "hours_invested"]],
-                key="editor_tab1", use_container_width=True, hide_index=True, height=480, column_config=col_config_base
-            )
-        with tab2:
-            df2 = st.data_editor(
-                st.session_state.tracker_df[["member_name", "tasks_completed", "tasks_on_time", "tasks_late", "blocked_tasks"]],
-                key="editor_tab2", use_container_width=True, hide_index=True, height=480, column_config=col_config_locked
-            )
-        with tab3:
-            df3 = st.data_editor(
-                st.session_state.tracker_df[["member_name", "avg_quality_1_to_5", "meetings_required", "meetings_attended", "pm_confidence_1_to_5", "communication_score", "notes"]],
-                key="editor_tab3", use_container_width=True, hide_index=True, height=480, column_config=col_config_locked
-            )
-
-        submit_edits = st.form_submit_button("☑ Save Cloud Draft & Update Preview Below", type="primary", use_container_width=True)
+        submit_edits = st.form_submit_button("☑ Save Cloud Draft & Update Preview", type="primary", use_container_width=True)
 
     if submit_edits:
         st.session_state.tracker_df.update(df1)
         st.session_state.tracker_df.update(df2.drop(columns=["member_name"]))
         st.session_state.tracker_df.update(df3.drop(columns=["member_name"]))
-        
         if pm_name.strip():
-            draft_records_to_save = st.session_state.tracker_df.to_dict(orient="records")
-            save_cloud_draft(competition, pm_name, division, week_start, draft_records_to_save)
+            save_cloud_draft(competition, pm_name, division, week_start, st.session_state.tracker_df.to_dict(orient="records"))
         st.rerun()
-
     st.markdown('</div>', unsafe_allow_html=True)
 
     rows = st.session_state.tracker_df.fillna("").to_dict(orient="records")
     report = make_report(pm_name=pm_name, division=division, week_start=week_start, rows=rows)
     report["competition"] = competition 
     preview = pd.DataFrame(report["records"])
-
-    st.markdown('<div class="glass">', unsafe_allow_html=True)
-    st.subheader("Auto-calculated preview")
-    if preview.empty:
-        st.info("ⓘ No real rows yet. Add at least one member name in the 'Assignment' tab and click Save to preview metrics.")
-    else:
-        visible = preview[["member_name", "role", "completion_score", "quality_score", "delivery_score", "attendance_score", "confidence_score", "performance_pct", "status", "flags", "notes"]].copy()
-        visible["flags"] = visible["flags"].apply(flags_to_text)
-        st.dataframe(visible, use_container_width=True, hide_index=True)
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Members", len(preview))
-        c2.metric("Avg performance", f"{preview['performance_pct'].mean():.1f}%")
-        c3.metric("Open blockers", int(preview["blocked_tasks"].sum()))
-        c4.metric("Critical / Watch", int(preview["status"].isin(["Critical", "Watch"]).sum()))
-    st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="glass">', unsafe_allow_html=True)
     st.subheader("Submit to Google Sheets")
@@ -1033,27 +891,11 @@ if current_page == "▦ Weekly Performance Report":
             delete_cloud_draft(competition, pm_name, division, week_start)
     st.markdown('</div>', unsafe_allow_html=True)
 
+
 # -----------------------------------------------------------------------------
 # PAGE: CONTENT CALENDAR
 # -----------------------------------------------------------------------------
 elif current_page == "◫ Content Calendar":
-    if "cc_pm_month" not in st.session_state: st.session_state.cc_pm_month = calendar.month_name[date.today().month]
-    if "cc_pm_year" not in st.session_state: st.session_state.cc_pm_year = date.today().year
-
-    def cc_prev_month():
-        m_idx = MONTHS_LIST.index(st.session_state.cc_pm_month) + 1
-        y = int(st.session_state.cc_pm_year)
-        if m_idx == 1: m_idx, y = 12, y - 1
-        else: m_idx -= 1
-        st.session_state.cc_pm_month, st.session_state.cc_pm_year = calendar.month_name[m_idx], y
-
-    def cc_next_month():
-        m_idx = MONTHS_LIST.index(st.session_state.cc_pm_month) + 1
-        y = int(st.session_state.cc_pm_year)
-        if m_idx == 12: m_idx, y = 1, y + 1
-        else: m_idx += 1
-        st.session_state.cc_pm_month, st.session_state.cc_pm_year = calendar.month_name[m_idx], y
-
     st.markdown(
         f"""
         <div class="hero">
@@ -1073,54 +915,72 @@ elif current_page == "◫ Content Calendar":
         """, unsafe_allow_html=True
     )
 
-    st.markdown('<div class="glass">', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
-    cal_mission = c1.selectbox("Mission", ["General", "Mars", "Luna"], index=0)
-    cal_cycle = c2.selectbox("Cycle", DYNAMIC_CYCLES, index=1)
-    cal_month = c3.selectbox("Month", MONTHS_LIST, key="cc_pm_month")
-    year_options = [date.today().year - 1, date.today().year, date.today().year + 1, date.today().year + 2]
-    cal_year = c4.selectbox("Year", year_options, key="cc_pm_year")
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    full_cal_df = load_content_calendar(client)
-    
-    if not full_cal_df.empty:
-        full_cal_df["temp_dt"] = pd.to_datetime(full_cal_df["planned_date"], errors="coerce")
+    ws_cal, df_cal = get_worksheet_df(client, "content_calendar", CONTENT_CAL_COLUMNS)
+
+    if st.button("➕ Schedule Content", type="primary"):
+        @st.dialog("➕ Schedule Content")
+        def create_content_dialog():
+            st.markdown("Draft new content for your social or outreach pipelines.")
+            with st.form("new_content_form"):
+                title = st.text_input("Content Title *")
+                c1, c2 = st.columns(2)
+                platform = c1.selectbox("Platform", list(PLATFORM_COLORS.keys()))
+                status = c2.selectbox("Status", list(STATUS_SYMBOLS.keys()))
+                
+                c3, c4 = st.columns(2)
+                p_date = c3.date_input("Planned Date", value=date.today())
+                ctype = c4.text_input("Content Type (Reel, Post, etc.)")
+                
+                desc = st.text_area("Description / Copy")
+                owner = st.text_input("Owner")
+                
+                submit = st.form_submit_button("☑ Schedule Content", type="primary", use_container_width=True)
+                if submit:
+                    if not title: st.error("⚠ Title is required.")
+                    else:
+                        new_row = pd.DataFrame([{
+                            "content_id": str(uuid.uuid4()),
+                            "mission": cal_mission,
+                            "cycle": cal_cycle,
+                            "month": cal_month,
+                            "planned_date": p_date.strftime("%Y-%m-%d") if p_date else "",
+                            "platform": platform,
+                            "content_title": title,
+                            "description": desc,
+                            "content_type": ctype,
+                            "owner": owner,
+                            "status": status,
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }])
+                        save_content_calendar_month(new_row, cal_mission, cal_cycle, cal_month, cal_year)
+                        st.rerun()
+        create_content_dialog()
+
+    if not df_cal.empty:
+        df_cal["temp_dt"] = pd.to_datetime(df_cal["planned_date"], errors="coerce")
         month_idx = MONTHS_LIST.index(cal_month) + 1
-        mask = ((full_cal_df["mission"] == cal_mission) & (full_cal_df["cycle"] == cal_cycle) & 
-                (full_cal_df["temp_dt"].dt.month == month_idx) & (full_cal_df["temp_dt"].dt.year == cal_year))
-        active_df = full_cal_df[mask].drop(columns=["temp_dt"]).copy()
+        mask = ((df_cal["mission"] == cal_mission) & (df_cal["cycle"] == cal_cycle) & 
+                (df_cal["temp_dt"].dt.month == month_idx) & (df_cal["temp_dt"].dt.year == cal_year))
+        active_df = df_cal[mask].drop(columns=["temp_dt"]).copy()
     else:
         active_df = pd.DataFrame(columns=CONTENT_CAL_COLUMNS)
 
-    # Execution Tracker
     st.markdown("### ⌖ Execution Tracker")
     total_planned = len(active_df)
     posted = len(active_df[active_df["status"] == "Posted"])
     missed = len(active_df[active_df["status"] == "Missed"])
     pending = len(active_df[active_df["status"].isin(["Planned", "In Progress", "Rescheduled"])])
-    late_count = 0
-    if not active_df.empty:
-        posted_df = active_df[active_df["status"] == "Posted"]
-        p_dates = pd.to_datetime(posted_df["planned_date"], errors="coerce")
-        a_dates = pd.to_datetime(posted_df["actual_posted_date"], errors="coerce")
-        late_count = len(posted_df[a_dates > p_dates])
-        
-    m1, m2, m3, m4, m5 = st.columns(5)
+    
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Planned Items", total_planned)
     m2.metric("Posted", posted)
     m3.metric("Missed", missed)
     m4.metric("Pending", pending)
-    m5.metric("Posted Late", late_count)
 
     st.divider()
     
-    # --- VISUAL MONTHLY CALENDAR ---
-    c_prev, c_title, c_next = st.columns([1, 6, 1])
-    with c_prev: st.button("◀ Prev", on_click=cc_prev_month, use_container_width=True)
-    with c_title: st.markdown(f"<h3 style='text-align:center; margin-top:0;'>◫ {cal_month} {cal_year}</h3>", unsafe_allow_html=True)
-    with c_next: st.button("Next ▶", on_click=cc_next_month, use_container_width=True)
-    
+    st.markdown(f"### ◫ {cal_month} {cal_year}")
     month_idx = MONTHS_LIST.index(cal_month) + 1
     cal = calendar.monthcalendar(cal_year, month_idx)
     
@@ -1146,45 +1006,38 @@ elif current_page == "◫ Content Calendar":
                     content_html += f"<div class='cal-badge' style='background:{bg_color};' title='{title}'>{symbol} {platform}</div>"
                 cols[i].markdown(f"<div class='cal-day'><div class='cal-date'>{day}</div>{content_html}</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("### ▦ Content Editor")
-    st.markdown('<div class="chart-desc">ⓘ Edit rows directly. To add a new event, scroll to the bottom and click the empty row. Marking an item as "Posted" will automatically timestamp the execution.</div>', unsafe_allow_html=True)
-    
-    edit_cols = ["content_id", "planned_date", "platform", "content_title", "description", "content_type", "owner", "status", "actual_posted_date", "notes"]
-    display_df = active_df[edit_cols].copy()
-    
-    display_df = pd.concat([display_df, pd.DataFrame([{"status": "Planned", "platform": "Instagram"} for _ in range(3)])], ignore_index=True)
-    display_df["planned_date"] = pd.to_datetime(display_df["planned_date"], errors="coerce").dt.date
-    display_df["actual_posted_date"] = pd.to_datetime(display_df["actual_posted_date"], errors="coerce").dt.date
-    
-    config = {
-        "content_id": None, 
-        "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD", help="Date the content is scheduled to go live."),
-        "platform": st.column_config.SelectboxColumn("Platform", options=list(PLATFORM_COLORS.keys()), help="Target platform for the content."),
-        "content_title": st.column_config.TextColumn("Title", help="Short name or headline for the content."),
-        "description": st.column_config.TextColumn("Description", help="Caption, draft, or key points."),
-        "content_type": st.column_config.TextColumn("Content Type", help="Format of the content (e.g., Reel, Carousel, Newsletter)."),
-        "owner": st.column_config.TextColumn("Owner", help="Team member responsible for this content."),
-        "status": st.column_config.SelectboxColumn("Status", options=list(STATUS_SYMBOLS.keys()), help="Current state. Marking as 'Posted' automatically sets actual dates."),
-        "actual_posted_date": st.column_config.DateColumn("Actual Posted", format="YYYY-MM-DD", help="When it actually went live. Auto-fills when status is Posted."),
-        "notes": st.column_config.TextColumn("Notes", help="Links to assets, final URLs, or comments."),
-    }
-    
-    edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500, column_config=config)
-    
-    if st.button("☑ Save Content Calendar", type="primary"):
-        final_save_df = edited_view.copy()
-        if not active_df.empty:
-            meta_df = active_df[["content_id", "marked_done_at", "created_at"]].dropna(subset=["content_id"])
-            final_save_df = pd.merge(final_save_df, meta_df, on="content_id", how="left")
-            
-        final_save_df["planned_date"] = pd.to_datetime(final_save_df["planned_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
-        final_save_df["actual_posted_date"] = pd.to_datetime(final_save_df["actual_posted_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+    with st.expander("▦ Bulk Content Editor"):
+        st.markdown('<div class="chart-desc">ⓘ Bulk edit rows directly. Changing status to "Posted" automatically updates the execution timestamp.</div>', unsafe_allow_html=True)
+        edit_cols = ["content_id", "planned_date", "platform", "content_title", "description", "content_type", "owner", "status", "actual_posted_date", "notes"]
+        display_df = active_df[edit_cols].copy()
         
-        save_content_calendar_month(final_save_df, cal_mission, cal_cycle, cal_month, cal_year)
-        st.success(f"ⓘ Successfully saved Content Calendar for {cal_mission} ({cal_month} {cal_year}).")
-        load_content_calendar.clear()
-        st.rerun()
+        display_df["planned_date"] = pd.to_datetime(display_df["planned_date"], errors="coerce").dt.date
+        display_df["actual_posted_date"] = pd.to_datetime(display_df["actual_posted_date"], errors="coerce").dt.date
+        
+        config = {
+            "content_id": None, 
+            "planned_date": st.column_config.DateColumn("Planned Date", format="YYYY-MM-DD", help="Date the content is scheduled to go live."),
+            "platform": st.column_config.SelectboxColumn("Platform", options=list(PLATFORM_COLORS.keys()), help="Target platform for the content."),
+            "content_title": st.column_config.TextColumn("Title", help="Short name or headline for the content."),
+            "description": st.column_config.TextColumn("Description", help="Caption, draft, or key points."),
+            "content_type": st.column_config.TextColumn("Content Type", help="Format of the content (e.g., Reel, Carousel, Newsletter)."),
+            "owner": st.column_config.TextColumn("Owner", help="Team member responsible for this content."),
+            "status": st.column_config.SelectboxColumn("Status", options=list(STATUS_SYMBOLS.keys()), help="Current state. Marking as 'Posted' automatically sets actual dates."),
+            "actual_posted_date": st.column_config.DateColumn("Actual Posted", format="YYYY-MM-DD", help="When it actually went live. Auto-fills when status is Posted."),
+            "notes": st.column_config.TextColumn("Notes", help="Links to assets, final URLs, or comments."),
+        }
+        edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500, column_config=config)
+        
+        if st.button("☑ Save Content Editor", type="primary"):
+            final_save_df = edited_view.copy()
+            if not active_df.empty:
+                meta_df = active_df[["content_id", "marked_done_at", "created_at"]].dropna(subset=["content_id"])
+                final_save_df = pd.merge(final_save_df, meta_df, on="content_id", how="left")
+                
+            final_save_df["planned_date"] = pd.to_datetime(final_save_df["planned_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            final_save_df["actual_posted_date"] = pd.to_datetime(final_save_df["actual_posted_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
+            save_content_calendar_month(final_save_df, cal_mission, cal_cycle, cal_month, cal_year)
+            st.rerun()
 
 # -----------------------------------------------------------------------------
 # PAGE: FUNDRAISING & FINANCE
@@ -1209,25 +1062,15 @@ elif current_page == "$ Fundraising & Finance":
         """, unsafe_allow_html=True
     )
     
-    st.markdown('<div class="glass">', unsafe_allow_html=True)
-    f1, f2, f3, f4 = st.columns(4)
-    fin_mission = f1.selectbox("Mission Filter", ["General", "Mars", "Luna"], index=0)
-    fin_cycle = f2.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
-    fin_month = f3.selectbox("Month Filter", MONTHS_LIST, index=date.today().month - 1)
-    fin_year = f4.selectbox("Year Filter", [date.today().year - 1, date.today().year, date.today().year + 1], index=1)
-    st.markdown('</div>', unsafe_allow_html=True)
+    ws_evt, events_df = get_worksheet_df(client, "fundraising_events", EVENTS_HEADERS)
+    ws_txn, trans_df = get_worksheet_df(client, "fundraising_transactions", TRANSACTIONS_HEADERS)
+    ws_exp, exp_df = get_worksheet_df(client, "fundraising_expenses", EXPENSES_HEADERS)
+    ws_goal, goals_df = get_worksheet_df(client, "fundraising_goals", GOALS_HEADERS)
 
-    events_df = load_finance_sheet(client, "fundraising_events", EVENTS_HEADERS)
-    events_df = events_df[(events_df["mission"] == fin_mission) & (events_df["cycle"] == fin_cycle)].copy() if not events_df.empty else pd.DataFrame(columns=EVENTS_HEADERS)
-
-    trans_df = load_finance_sheet(client, "fundraising_transactions", TRANSACTIONS_HEADERS)
-    trans_df = trans_df[(trans_df["mission"] == fin_mission) & (trans_df["cycle"] == fin_cycle)].copy() if not trans_df.empty else pd.DataFrame(columns=TRANSACTIONS_HEADERS)
-
-    exp_df = load_finance_sheet(client, "fundraising_expenses", EXPENSES_HEADERS)
-    exp_df = exp_df[(exp_df["mission"] == fin_mission) & (exp_df["cycle"] == fin_cycle)].copy() if not exp_df.empty else pd.DataFrame(columns=EXPENSES_HEADERS)
-
-    goals_df = load_finance_sheet(client, "fundraising_goals", GOALS_HEADERS)
-    goals_df = goals_df[(goals_df["mission"] == fin_mission) & (goals_df["cycle"] == fin_cycle)].copy() if not goals_df.empty else pd.DataFrame(columns=GOALS_HEADERS)
+    if not events_df.empty: events_df = events_df[(events_df["mission"] == fin_mission) & (events_df["cycle"] == fin_cycle)].copy()
+    if not trans_df.empty: trans_df = trans_df[(trans_df["mission"] == fin_mission) & (trans_df["cycle"] == fin_cycle)].copy()
+    if not exp_df.empty: exp_df = exp_df[(exp_df["mission"] == fin_mission) & (exp_df["cycle"] == fin_cycle)].copy()
+    if not goals_df.empty: goals_df = goals_df[(goals_df["mission"] == fin_mission) & (goals_df["cycle"] == fin_cycle)].copy()
 
     trans_sums = trans_df.groupby("event_id")["amount"].sum() if not trans_df.empty else pd.Series()
     exp_sums = exp_df.groupby("event_id")["amount"].sum() if not exp_df.empty else pd.Series()
@@ -1235,13 +1078,91 @@ elif current_page == "$ Fundraising & Finance":
     if not events_df.empty:
         for idx, row in events_df.iterrows():
             eid = row.get("event_id")
-            g, e = trans_sums.get(eid, 0.0), exp_sums.get(eid, 0.0)
-            events_df.at[idx, "actual_gross_revenue"] = g
-            events_df.at[idx, "actual_expenses"] = e
-            events_df.at[idx, "actual_net_revenue"] = g - e
+            events_df.at[idx, "actual_gross_revenue"] = trans_sums.get(eid, 0.0)
+            events_df.at[idx, "actual_expenses"] = exp_sums.get(eid, 0.0)
+            events_df.at[idx, "actual_net_revenue"] = trans_sums.get(eid, 0.0) - exp_sums.get(eid, 0.0)
             events_df.at[idx, "expected_net_revenue"] = float(row.get("expected_gross_revenue") or 0) - float(row.get("expected_expenses") or 0)
 
-    event_options = [str(x) for x in events_df["event_name"].dropna().unique()] if not events_df.empty else ["None"]
+    event_options = [str(x) for x in events_df["event_name"].dropna().unique()] if not events_df.empty else []
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("➕ Plan Fundraiser", type="primary", use_container_width=True):
+            @st.dialog("➕ Plan Fundraiser")
+            def create_fundraiser_dialog():
+                with st.form("new_event_form"):
+                    name = st.text_input("Event Name *")
+                    c1, c2 = st.columns(2)
+                    etype = c1.selectbox("Event Type", ["Food Sale", "Raffle", "Sponsorship", "Donation", "Venue Fundraiser", "Online Campaign", "Community Event", "Other"])
+                    status = c2.selectbox("Status", ["Planned", "In Progress", "Completed", "Cancelled", "Delayed", "Needs Follow-Up"])
+                    c3, c4 = st.columns(2)
+                    pdate = c3.date_input("Planned Date", value=date.today())
+                    loc = c4.text_input("Location")
+                    c5, c6 = st.columns(2)
+                    exp_gross = c5.number_input("Expected Gross $", min_value=0.0)
+                    exp_costs = c6.number_input("Expected Costs $", min_value=0.0)
+                    if st.form_submit_button("☑ Create Event", type="primary", use_container_width=True):
+                        if not name: st.error("⚠ Event Name is required.")
+                        else:
+                            new_event = pd.DataFrame([{
+                                "event_id": str(uuid.uuid4()), "mission": fin_mission, "cycle": fin_cycle,
+                                "event_name": name, "event_type": etype, "planned_date": pdate.strftime("%Y-%m-%d") if pdate else "",
+                                "location": loc, "status": status, "expected_gross_revenue": exp_gross, "expected_expenses": exp_costs,
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }])
+                            save_planner_data(client, new_event, events_df, EVENTS_HEADERS, "fundraising_events", "event_id")
+                            st.rerun()
+            create_fundraiser_dialog()
+            
+    with c2:
+        if st.button("➕ Log Income", type="primary", use_container_width=True):
+            @st.dialog("➕ Log Income")
+            def log_income_dialog():
+                with st.form("new_txn_form"):
+                    evt = st.selectbox("Linked Event", ["Unlinked"] + event_options)
+                    c1, c2 = st.columns(2)
+                    src_type = c1.selectbox("Source Type", ["Individual", "Sponsor", "Ticket Sale", "Raffle Sale", "Food Sale", "Online Donation", "Cash Donation", "Other"])
+                    src_name = c2.text_input("Source Name")
+                    c3, c4 = st.columns(2)
+                    method = c3.selectbox("Payment Method", ["ATH Movil", "Cash", "PayPal", "Check", "Bank Transfer", "Card", "Other"])
+                    amt = c4.number_input("Amount $ *", min_value=0.01)
+                    tdate = st.date_input("Date", value=date.today())
+                    if st.form_submit_button("☑ Save Transaction", type="primary", use_container_width=True):
+                        name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
+                        new_t = pd.DataFrame([{
+                            "transaction_id": str(uuid.uuid4()), "event_id": name_to_id.get(evt, "") if evt != "Unlinked" else "",
+                            "event_name": evt if evt != "Unlinked" else "", "mission": fin_mission, "cycle": fin_cycle,
+                            "source_type": src_type, "source_name": src_name, "payment_method": method, "amount": amt,
+                            "transaction_date": tdate.strftime("%Y-%m-%d") if tdate else "", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }])
+                        save_planner_data(client, new_t, trans_df, TRANSACTIONS_HEADERS, "fundraising_transactions", "transaction_id")
+                        st.rerun()
+            log_income_dialog()
+            
+    with c3:
+        if st.button("➕ Log Expense", type="primary", use_container_width=True):
+            @st.dialog("➕ Log Expense")
+            def log_expense_dialog():
+                with st.form("new_exp_form"):
+                    evt = st.selectbox("Linked Event", ["Unlinked"] + event_options)
+                    c1, c2 = st.columns(2)
+                    cat = c1.selectbox("Category", ["Food / Materials", "Venue", "Marketing", "Equipment", "Transportation", "Permit", "Prize", "Supplies", "Other"])
+                    vendor = c2.text_input("Vendor")
+                    item = st.text_input("Item Description")
+                    c3, c4 = st.columns(2)
+                    amt = c3.number_input("Amount Spent $ *", min_value=0.01)
+                    edate = c4.date_input("Date", value=date.today())
+                    if st.form_submit_button("☑ Save Expense", type="primary", use_container_width=True):
+                        name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
+                        new_e = pd.DataFrame([{
+                            "expense_id": str(uuid.uuid4()), "event_id": name_to_id.get(evt, "") if evt != "Unlinked" else "",
+                            "event_name": evt if evt != "Unlinked" else "", "mission": fin_mission, "cycle": fin_cycle,
+                            "category": cat, "vendor": vendor, "item_description": item, "amount": amt,
+                            "expense_date": edate.strftime("%Y-%m-%d") if edate else "", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }])
+                        save_planner_data(client, new_e, exp_df, EXPENSES_HEADERS, "fundraising_expenses", "expense_id")
+                        st.rerun()
+            log_expense_dialog()
 
     tab_cal, tab_evt, tab_txn, tab_exp, tab_goal, tab_analytics = st.tabs(["◫ Calendar Preview", "◈ Events", "▦ Transactions", "▦ Expenses", "⊙ Goals", "⌁ Analytics"])
 
@@ -1249,7 +1170,6 @@ elif current_page == "$ Fundraising & Finance":
         st.markdown(f"### ◫ {fin_month} {fin_year}")
         month_idx = MONTHS_LIST.index(fin_month) + 1
         cal_grid = calendar.monthcalendar(fin_year, month_idx)
-        
         cols = st.columns(7)
         for i, d_name in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
             cols[i].markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:800; font-size:14px; margin-bottom:8px;'>{d_name}</div>", unsafe_allow_html=True)
@@ -1280,8 +1200,6 @@ elif current_page == "$ Fundraising & Finance":
         st.markdown("### ◈ Event Management")
         evt_cols = ["event_id", "event_name", "event_type", "planned_date", "actual_date", "location", "status", "expected_gross_revenue", "expected_expenses", "venue_confirmed", "permits_completed", "marketing_ready", "volunteers_ready"]
         evt_view = events_df[evt_cols].copy() if not events_df.empty else pd.DataFrame(columns=evt_cols)
-        evt_view = pd.concat([evt_view, pd.DataFrame([{"status": "Planned", "event_type": "Other", "expected_gross_revenue": 0, "expected_expenses": 0} for _ in range(3)])], ignore_index=True)
-        
         evt_view["planned_date"] = pd.to_datetime(evt_view["planned_date"], errors="coerce").dt.date
         evt_view["actual_date"] = pd.to_datetime(evt_view["actual_date"], errors="coerce").dt.date
         
@@ -1300,25 +1218,16 @@ elif current_page == "$ Fundraising & Finance":
             "marketing_ready": st.column_config.CheckboxColumn("Marketing", help="Are flyers/social posts ready?"),
             "volunteers_ready": st.column_config.CheckboxColumn("Vols", help="Is the team staffing finalized?"),
         }
-        
         edited_evt = st.data_editor(evt_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
-        if st.button("☑ Save Events", type="primary"):
-            final = edited_evt.copy()
-            if not events_df.empty:
-                meta = events_df[["event_id", "created_at", "actual_gross_revenue", "actual_expenses", "actual_net_revenue", "expected_net_revenue"]].dropna(subset=["event_id"])
-                final = pd.merge(final, meta, on="event_id", how="left")
-            final["planned_date"] = pd.to_datetime(final["planned_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
-            final["actual_date"] = pd.to_datetime(final["actual_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
-            save_finance_sheet(client, "fundraising_events", final, EVENTS_HEADERS, "event_id", fin_mission, fin_cycle)
+        if st.button("☑ Save Events Bulk Editor", type="primary"):
+            save_planner_data(client, edited_evt, events_df, EVENTS_HEADERS, "fundraising_events", "event_id")
             st.rerun()
 
     with tab_txn:
         st.markdown("### ▦ Income Transactions")
         txn_cols = ["transaction_id", "event_name", "transaction_date", "source_type", "source_name", "payment_method", "amount", "deposited"]
         txn_view = trans_df[txn_cols].copy() if not trans_df.empty else pd.DataFrame(columns=txn_cols)
-        txn_view = pd.concat([txn_view, pd.DataFrame([{"source_type": "Other", "payment_method": "Cash", "amount": 0} for _ in range(3)])], ignore_index=True)
         txn_view["transaction_date"] = pd.to_datetime(txn_view["transaction_date"], errors="coerce").dt.date
-        
         config = {
             "transaction_id": None, 
             "transaction_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD", help="Date the money was received."),
@@ -1326,63 +1235,44 @@ elif current_page == "$ Fundraising & Finance":
             "source_type": st.column_config.SelectboxColumn("Source", options=["Individual", "Sponsor", "Ticket Sale", "Raffle Sale", "Food Sale", "Online Donation", "Cash Donation", "Other"], help="Who or what provided the funds?"),
             "payment_method": st.column_config.SelectboxColumn("Method", options=["ATH Movil", "Cash", "PayPal", "Check", "Bank Transfer", "Card", "Other"], help="How was it paid?"),
         }
-        
         edited_txn = st.data_editor(txn_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
-        if st.button("☑ Save Transactions", type="primary"):
-            final = edited_txn.copy()
-            if not trans_df.empty:
-                final = pd.merge(final, trans_df[["transaction_id", "created_at"]].dropna(), on="transaction_id", how="left")
+        if st.button("☑ Save Transactions Bulk Editor", type="primary"):
             name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
-            final["event_id"] = final["event_name"].map(name_to_id).fillna("")
-            final["transaction_date"] = pd.to_datetime(final["transaction_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
-            save_finance_sheet(client, "fundraising_transactions", final, TRANSACTIONS_HEADERS, "transaction_id", fin_mission, fin_cycle)
+            edited_txn["event_id"] = edited_txn["event_name"].map(name_to_id).fillna("")
+            save_planner_data(client, edited_txn, trans_df, TRANSACTIONS_HEADERS, "fundraising_transactions", "transaction_id")
             st.rerun()
 
     with tab_exp:
         st.markdown("### ▦ Expenses")
         exp_cols = ["expense_id", "event_name", "expense_date", "vendor", "item_description", "category", "amount", "reimbursed"]
         exp_view = exp_df[exp_cols].copy() if not exp_df.empty else pd.DataFrame(columns=exp_cols)
-        exp_view = pd.concat([exp_view, pd.DataFrame([{"category": "Other", "amount": 0} for _ in range(3)])], ignore_index=True)
         exp_view["expense_date"] = pd.to_datetime(exp_view["expense_date"], errors="coerce").dt.date
-        
         config = {
             "expense_id": None, 
             "expense_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD", help="Date the purchase was made."),
             "event_name": st.column_config.SelectboxColumn("Linked Event", options=event_options, help="Which event is this cost for?"),
             "category": st.column_config.SelectboxColumn("Category", options=["Food / Materials", "Venue", "Marketing", "Equipment", "Transportation", "Permit", "Prize", "Supplies", "Other"], help="Type of expense."),
         }
-        
         edited_exp = st.data_editor(exp_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
-        if st.button("☑ Save Expenses", type="primary"):
-            final = edited_exp.copy()
-            if not exp_df.empty:
-                final = pd.merge(final, exp_df[["expense_id", "created_at"]].dropna(), on="expense_id", how="left")
+        if st.button("☑ Save Expenses Bulk Editor", type="primary"):
             name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
-            final["event_id"] = final["event_name"].map(name_to_id).fillna("")
-            final["expense_date"] = pd.to_datetime(final["expense_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
-            save_finance_sheet(client, "fundraising_expenses", final, EXPENSES_HEADERS, "expense_id", fin_mission, fin_cycle)
+            edited_exp["event_id"] = edited_exp["event_name"].map(name_to_id).fillna("")
+            save_planner_data(client, edited_exp, exp_df, EXPENSES_HEADERS, "fundraising_expenses", "expense_id")
             st.rerun()
 
     with tab_goal:
         st.markdown("### ⊙ Organizational Goals")
         goal_cols = ["goal_id", "goal_name", "target_amount", "deadline", "purpose", "status"]
         goal_view = goals_df[goal_cols].copy() if not goals_df.empty else pd.DataFrame(columns=goal_cols)
-        goal_view = pd.concat([goal_view, pd.DataFrame([{"status": "In Progress", "target_amount": 0}])], ignore_index=True)
         goal_view["deadline"] = pd.to_datetime(goal_view["deadline"], errors="coerce").dt.date
-        
         config = {
             "goal_id": None, 
             "deadline": st.column_config.DateColumn("Deadline", format="YYYY-MM-DD"),
             "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Achieved", "Missed"]),
         }
-        
         edited_goal = st.data_editor(goal_view, num_rows="dynamic", use_container_width=True, height=250, column_config=config)
         if st.button("☑ Save Goals", type="primary"):
-            final = edited_goal.copy()
-            if not goals_df.empty:
-                final = pd.merge(final, goals_df[["goal_id", "created_at"]].dropna(), on="goal_id", how="left")
-            final["deadline"] = pd.to_datetime(final["deadline"], errors="coerce").dt.strftime('%Y-%m-%d').fillna("")
-            save_finance_sheet(client, "fundraising_goals", final, GOALS_HEADERS, "goal_id", fin_mission, fin_cycle)
+            save_planner_data(client, edited_goal, goals_df, GOALS_HEADERS, "fundraising_goals", "goal_id")
             st.rerun()
 
     with tab_analytics:
@@ -1390,7 +1280,6 @@ elif current_page == "$ Fundraising & Finance":
         t_gross = events_df["actual_gross_revenue"].sum() if not events_df.empty else 0.0
         t_exp = events_df["actual_expenses"].sum() if not events_df.empty else 0.0
         t_net = t_gross - t_exp
-        
         t_goal = goals_df["target_amount"].sum() if not goals_df.empty else 0.0
         progress_pct = (t_net / t_goal * 100) if t_goal > 0 else 0.0
         
@@ -1399,33 +1288,40 @@ elif current_page == "$ Fundraising & Finance":
         m2.metric("Total Expenses", f"${t_exp:,.2f}")
         m3.metric("Total Net Revenue", f"${t_net:,.2f}")
         m4.metric("Goal Progress", f"{progress_pct:.1f}%")
-        
         st.divider()
         st.info("ⓘ Advanced executive charts are available on the Master Dashboard.")
+
 
 # -----------------------------------------------------------------------------
 # PAGE: PLANNER COMMAND
 # -----------------------------------------------------------------------------
 elif current_page == "▦ Planner":
     
-    # 1. Provide the Create Task Dialog function
     @st.dialog("➕ Create New Task")
-    def create_task_dialog(mission, cycle, division, members, df_tasks, sh):
+    def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb):
         st.markdown("Fill out the details to assign a new task to your board.")
         with st.form("new_task_form"):
             title = st.text_input("Task Title *")
             desc = st.text_area("Description")
             
-            col1, col2 = st.columns(2)
-            assignee = col1.selectbox("Assign To", ["Unassigned"] + members, help="Start typing a name to search the directory.")
-            bucket = col2.selectbox("Bucket", ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"])
+            c1, c2 = st.columns(2)
+            assignee = c1.selectbox("Assign To", ["Unassigned"] + members, help="Start typing a name to search the directory.")
             
-            col3, col4 = st.columns(2)
-            due_date = col3.date_input("Due Date", value=None)
-            priority = col4.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
+            # Display contact info if assigned
+            if assignee != "Unassigned" and not df_memb.empty:
+                mem_row = df_memb[df_memb['member_name'] == assignee]
+                if not mem_row.empty:
+                    em = mem_row.iloc[0].get('email', 'No email')
+                    ro = mem_row.iloc[0].get('role', 'No role')
+                    c1.caption(f"📧 {em} | 🛠 {ro}")
+                    
+            bucket = c2.selectbox("Bucket", ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"])
+            
+            c3, c4 = st.columns(2)
+            due_date = c3.date_input("Due Date", value=None)
+            priority = c4.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
             
             submit = st.form_submit_button("☑ Create Task", type="primary", use_container_width=True)
-            
             if submit:
                 if not title:
                     st.error("⚠ Title is required.")
@@ -1447,7 +1343,7 @@ elif current_page == "▦ Planner":
                     }])
                     save_planner_data(sh, new_task, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
                     st.rerun()
-                    
+
     st.markdown(
         f"""
         <div class="hero">
@@ -1471,24 +1367,8 @@ elif current_page == "▦ Planner":
     ws_check, df_check = get_worksheet_df(client, "planner_task_checklist", PLANNER_CHECKLIST_COLS)
     ws_comm, df_comm = get_worksheet_df(client, "planner_task_comments", PLANNER_COMMENTS_COLS)
     ws_links, df_links = get_worksheet_df(client, "gantt_task_links", GANTT_TASK_LINKS_COLS)
-    ws_memb, df_memb = get_worksheet_df(client, "planner_members", PLANNER_MEMBERS_COLS)
     ws_notif, df_notif = get_worksheet_df(client, "planner_notifications_queue", PLANNER_NOTIFICATIONS_COLS)
     
-    # 2. Sidebar Filters
-    with st.sidebar:
-        st.header("▦ Planner Setup")
-        default_mission_idx = 0
-        if competition == "Mars": default_mission_idx = 1
-        elif competition == "Luna": default_mission_idx = 2
-        
-        plan_mission = st.selectbox("Mission Filter", ["General", "Mars", "Luna"], index=default_mission_idx)
-        plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
-        plan_division = st.selectbox("Division Filter", list(DIVISIONS.keys()), index=0)
-        
-        member_opts = df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else []
-        plan_assignee = st.selectbox("Assignee Filter", ["All"] + member_opts, help="Filter the board for a specific team member.")
-        st.divider()
-        
     view_df = df_tasks.copy()
     if not view_df.empty:
         view_df = view_df[view_df["mission"] == plan_mission]
@@ -1496,13 +1376,13 @@ elif current_page == "▦ Planner":
         view_df = view_df[view_df["division"] == plan_division]
         if plan_assignee != "All": view_df = view_df[view_df["assigned_to"] == plan_assignee]
 
-    tabs = st.tabs(["Board View", "Table Editor", "Task Details", "Team Directory"])
+    tabs = st.tabs(["Board View", "Table Bulk Editor", "Task Details", "Team Directory"])
     
     with tabs[0]:
         st.markdown("### ▦ Board View")
         
         if st.button("➕ Create Task", type="primary"):
-            create_task_dialog(plan_mission, plan_cycle, plan_division, member_opts, df_tasks, client)
+            create_task_dialog(plan_mission, plan_cycle, plan_division, member_opts, df_tasks, client, df_memb)
 
         buckets = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
         b_cols = st.columns(len(buckets))
@@ -1518,7 +1398,17 @@ elif current_page == "▦ Planner":
                             s_color = status_color(row.get("status", "Not Started"))
                             st.markdown(f"**◈ {row['title']}**")
                             st.markdown(f"<span style='color:{p_color}; font-size:12px;'>■ {row.get('priority')}</span> | <span style='color:{s_color}; font-size:12px;'>● {row.get('status')}</span>", unsafe_allow_html=True)
-                            st.caption(f"Assigned: {row.get('assigned_to', 'Unassigned')}")
+                            
+                            asign = row.get('assigned_to', 'Unassigned')
+                            if asign != 'Unassigned' and not df_memb.empty:
+                                mem_row = df_memb[df_memb['member_name'] == asign]
+                                if not mem_row.empty:
+                                    em = mem_row.iloc[0].get('email', '')
+                                    st.caption(f"Assignee: {asign} ({em})")
+                                else:
+                                    st.caption(f"Assignee: {asign}")
+                            else:
+                                st.caption(f"Assignee: {asign}")
                             
                             dd = str(row.get('due_date', ''))
                             if dd: st.caption(f"Due: {dd}")
@@ -1530,16 +1420,16 @@ elif current_page == "▦ Planner":
                                 st.info("Task selected! Open 'Task Details' tab.")
 
     with tabs[1]:
-        st.markdown("### ▦ Table Editor")
-        st.markdown("Bulk edit tasks. Stable IDs will automatically merge with Google Sheets.")
+        st.markdown("### ▦ Bulk Table Editor")
+        st.markdown("Edit tasks in bulk. Stable IDs will automatically merge with Google Sheets.")
         
         display_df = view_df.copy()
         if display_df.empty:
             display_df = pd.DataFrame(columns=PLANNER_TASKS_COLS)
             
-        pad = []
-        for _ in range(3): pad.append({"status": "Not Started", "priority": "Medium", "bucket": "Backlog", "mission": plan_mission, "cycle": plan_cycle, "division": plan_division})
-        display_df = pd.concat([display_df, pd.DataFrame(pad)], ignore_index=True)
+        display_df["start_date"] = pd.to_datetime(display_df["start_date"], errors="coerce").dt.date
+        display_df["due_date"] = pd.to_datetime(display_df["due_date"], errors="coerce").dt.date
+        display_df["completed_date"] = pd.to_datetime(display_df["completed_date"], errors="coerce").dt.date
         
         config = {
             "task_id": None,
@@ -1552,7 +1442,7 @@ elif current_page == "▦ Planner":
             "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"], help="Board column for visual organization."),
             "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"], help="Which mission this belongs to."),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS.keys()), help="Which subteam is responsible."),
+            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS), help="Which subteam is responsible."),
             "assigned_to": st.column_config.SelectboxColumn("Assigned To", options=member_opts if member_opts else [""], help="Team member assigned to complete the work."),
             "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
             "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
@@ -1562,7 +1452,7 @@ elif current_page == "▦ Planner":
         
         edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=600, column_config=config)
         
-        if st.button("☑ Save Tasks Table", type="primary"):
+        if st.button("☑ Save Tasks Bulk Editor", type="primary"):
             save_planner_data(client, edited_view, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
             update_gantt_links(client, edited_view, df_links)
             st.rerun()
@@ -1577,7 +1467,6 @@ elif current_page == "▦ Planner":
             with det_c1:
                 st.markdown(f"**Description:** {t_row.get('description', 'No description')}")
                 
-                # Render assignee + contact lookup
                 assignee_name = t_row.get('assigned_to', 'Unassigned')
                 st.markdown(f"**Assigned To:** {assignee_name}")
                 if assignee_name != 'Unassigned' and not df_memb.empty:
@@ -1667,7 +1556,7 @@ elif current_page == "▦ Planner":
             "updated_at": None,
             "member_name": st.column_config.TextColumn("Member Name", help="First and Last name"),
             "email": st.column_config.TextColumn("Email Address", help="Used for future notifications"),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS.keys())),
+            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS)),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"]),
             "role": st.column_config.TextColumn("Role", help="E.g., Structural Lead"),
             "active": st.column_config.CheckboxColumn("Active Team Member"),
