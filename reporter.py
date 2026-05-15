@@ -318,7 +318,7 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
     return len(values), deleted
 
 @st.cache_data(ttl=60, show_spinner=False)
-def load_content_calendar(force_refresh=0) -> pd.DataFrame:
+def load_content_calendar(_client, force_refresh=0) -> pd.DataFrame:
     ws = get_content_calendar_worksheet()
     records = ws.get_all_records()
     if not records:
@@ -566,6 +566,8 @@ def queue_notification(sh, task_row, df_notif):
     }])
     save_planner_data(sh, new_notif, df_notif, PLANNER_NOTIFICATIONS_COLS, "planner_notifications_queue", "notification_id")
 
+# --- POPUP CREATORS (DIALOGS) ---
+
 @st.dialog("+ Create New Task")
 def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb):
     st.markdown("Fill out the details to assign a new task to your board.")
@@ -576,7 +578,6 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
         c1, c2 = st.columns(2)
         assignee = c1.selectbox("Assign To", ["Unassigned"] + members, help="Start typing a name to search the directory.")
         
-        # Display contact info if assigned
         if assignee != "Unassigned" and not df_memb.empty:
             mem_row = df_memb[df_memb['member_name'] == assignee]
             if not mem_row.empty:
@@ -652,7 +653,7 @@ def create_content_dialog(mission, cycle, month_name, year_val, df_content, sh):
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }])
-                save_planner_data(sh, new_row, df_content, CONTENT_CAL_COLUMNS, "content_calendar", "content_id")
+                save_content_calendar_month(new_row, mission, cycle, month_name, y_int)
                 st.rerun()
 
 @st.dialog("+ Plan Fundraiser Event")
@@ -689,7 +690,7 @@ def create_fundraiser_dialog(mission, cycle, df_events, sh):
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }])
-                save_planner_data(sh, new_event, df_events, EVENTS_HEADERS, "fundraising_events", "event_id")
+                save_finance_sheet(sh, "fundraising_events", new_event, EVENTS_HEADERS, "event_id", mission, cycle)
                 st.rerun()
 
 @st.dialog("+ Log Income / Transaction")
@@ -725,7 +726,7 @@ def create_transaction_dialog(mission, cycle, df_txns, df_events, sh):
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }])
-            save_planner_data(sh, new_t, df_txns, TRANSACTIONS_HEADERS, "fundraising_transactions", "transaction_id")
+            save_finance_sheet(sh, "fundraising_transactions", new_t, TRANSACTIONS_HEADERS, "transaction_id", mission, cycle)
             st.rerun()
 
 @st.dialog("+ Log Expense")
@@ -761,7 +762,7 @@ def create_expense_dialog(mission, cycle, df_exps, df_events, sh):
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }])
-            save_planner_data(sh, new_e, df_exps, EXPENSES_HEADERS, "fundraising_expenses", "expense_id")
+            save_finance_sheet(sh, "fundraising_expenses", new_e, EXPENSES_HEADERS, "expense_id", mission, cycle)
             st.rerun()
 
 # -----------------------------------------------------------------------------
@@ -786,7 +787,7 @@ competition = st.session_state.competition
 
 with st.sidebar:
     st.divider()
-    st.header("⌖ Context Filters")
+    st.header("⌕ Context Filters")
     st.caption("These filters control what you see and create.")
     
     if current_page == "▦ Weekly Performance Report":
@@ -800,7 +801,7 @@ with st.sidebar:
         
         plan_mission = st.selectbox("Mission Filter", ["General", "Mars", "Luna"], index=default_mission_idx)
         plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
-        plan_division = st.selectbox("Division Filter", ["All"] + list(DIVISIONS.keys()), index=0)
+        plan_division = st.selectbox("Division Filter", ["All"] + list(DIVISIONS), index=0)
         plan_assignee = st.selectbox("Assignee Filter", ["All"] + member_opts, help="Filter the board for a specific team member.")
         st.divider()
         
@@ -817,7 +818,7 @@ with st.sidebar:
         fin_year = st.selectbox("Year Filter", [date.today().year - 1, date.today().year, date.today().year + 1, date.today().year + 2], index=1)
 
     st.divider()
-    st.header("⌖ Data Sync")
+    st.header("↻ Data Sync")
     if st.button("↻ Force Refresh Google Sheets", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -826,28 +827,24 @@ with st.sidebar:
 # DYNAMIC VIBE THEME ENGINE
 # -----------------------------------------------------------------------------
 if current_page == "◫ Content Calendar":
-    # Content & Media Vibe (Purple / Magenta)
     bg_top, bg_bot, side_top, side_bot = "#2e1065", "#000000", "#2e1065", "#000000"
     panel_bg, panel_light = "rgba(30, 27, 75, 0.60)", "rgba(46, 16, 101, 0.40)"
     primary, primary_hover, primary_text, primary_shadow = "#ec4899", "#db2777", "#ffffff", "rgba(236, 72, 153, 0.25)"
     logo_a_color, logo_a_shadow, logo_v_color, logo_v_shadow = "#ec4899", "#831843", "#a855f7", "#581c87"
     custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.5em; color: #ec4899; text-shadow: 2px 2px 0px #831843; font-style: normal; transform: translateY(-10px); display: inline-block;">[►]</span></div>'
 elif current_page == "$ Fundraising & Finance":
-    # Finance Vibe (Emerald / Mint Green)
     bg_top, bg_bot, side_top, side_bot = "#064e3b", "#000000", "#064e3b", "#000000"
     panel_bg, panel_light = "rgba(2, 44, 34, 0.60)", "rgba(6, 78, 59, 0.40)"
     primary, primary_hover, primary_text, primary_shadow = "#10b981", "#059669", "#ffffff", "rgba(16, 185, 129, 0.25)"
     logo_a_color, logo_a_shadow, logo_v_color, logo_v_shadow = "#10b981", "#064e3b", "#6ee7b7", "#047857"
     custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.6em; color: #10b981; text-shadow: 2px 2px 0px #064e3b; font-style: normal; transform: translateY(-8px); display: inline-block;">$</span></div>'
 elif current_page == "▦ Planner":
-    # Planner Vibe (Indigo)
     bg_top, bg_bot, side_top, side_bot = "#1e1b4b", "#000000", "#1e1b4b", "#000000"
     panel_bg, panel_light = "rgba(49, 46, 129, 0.45)", "rgba(67, 56, 202, 0.35)"
     primary, primary_hover, primary_text, primary_shadow = "#6366f1", "#4f46e5", "#ffffff", "rgba(99, 102, 241, 0.25)"
     logo_a_color, logo_a_shadow, logo_v_color, logo_v_shadow = "#6366f1", "#312e81", "#a855f7", "#4c1d95"
     custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.5em; color: #6366f1; text-shadow: 2px 2px 0px #312e81; font-style: normal; transform: translateY(-10px); display: inline-block;">✓</span></div>'
 else:
-    # Standard Performance Vibe
     custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v">V</span></div>'
     if competition == "Mars":
         bg_top, bg_bot, side_top, side_bot = "#1e293b", "#000000", "#1e293b", "#111827"
@@ -929,6 +926,7 @@ st.markdown(
         display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); margin: 0 8px 8px 0; color: #f8fafc; font-size: 13px; font-weight: 750;
     }}
     .dot {{ width: 10px; height: 10px; border-radius: 999px; display: inline-block; }}
+    .metric-note {{ color: #94a3b8; font-size: 13px; margin-top: 10px;}}
     
     h1, h2, h3, p, label, span, div {{ text-shadow: none; color: var(--ink); }}
     
@@ -961,6 +959,10 @@ st.markdown(
     .cal-day.empty {{ background: transparent; border: 1px dashed rgba(255,255,255,0.05); }}
     .cal-date {{ font-weight: 800; color: #cbd5e1; font-size: 14px; margin-bottom: 4px; }}
     .cal-badge {{ font-size: 11px; padding: 4px 6px; border-radius: 4px; color: #000000; font-weight: 700; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    
+    .kpi {{ padding: 24px; border-radius: 16px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); margin-bottom: 24px; }}
+    .kpi-label {{ color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }}
+    .kpi-value {{ color:#ffffff; font-size:36px; font-weight:950; letter-spacing:-.06em; margin-top:8px; }}
 </style>
 """,
     unsafe_allow_html=True,
@@ -1003,10 +1005,9 @@ if current_page == "▦ Weekly Performance Report":
         """, unsafe_allow_html=True
     )
 
-    legend_html = "".join(
-        f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>'
-        for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions
-    )
+    active_divisions = DIVISIONS if competition != "Luna" else [d for d in DIVISIONS if any(k in d.lower() for k in ["electrical", "vehicle", "software"])]
+
+    legend_html = "".join(f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>' for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions)
     st.markdown(f'<div class="glass"><b>Official Division Legend</b><br><br>{legend_html}<div class="metric-note">Formula: {metric_weights_text()}</div></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="glass" style="padding: 20px 28px;">', unsafe_allow_html=True)
@@ -1156,7 +1157,6 @@ if current_page == "▦ Weekly Performance Report":
             delete_cloud_draft(competition, pm_name, division, week_start)
     st.markdown('</div>', unsafe_allow_html=True)
 
-
 # -----------------------------------------------------------------------------
 # PAGE: CONTENT CALENDAR
 # -----------------------------------------------------------------------------
@@ -1197,17 +1197,14 @@ elif current_page == "◫ Content Calendar":
         """, unsafe_allow_html=True
     )
 
-    # 1. Left Menu Filtering explicitly connected
-    cal_mission = plan_mission
-    cal_cycle = plan_cycle
-    
+    # Re-use sidebar filters
     full_cal_df = load_content_calendar(client)
     
     if not full_cal_df.empty:
         full_cal_df["temp_dt"] = pd.to_datetime(full_cal_df["planned_date"], errors="coerce")
-        month_idx = MONTHS_LIST.index(st.session_state.cc_pm_month) + 1
+        month_idx = MONTHS_LIST.index(cal_month) + 1
         mask = ((full_cal_df["mission"] == cal_mission) & (full_cal_df["cycle"] == cal_cycle) & 
-                (full_cal_df["temp_dt"].dt.month == month_idx) & (full_cal_df["temp_dt"].dt.year == st.session_state.cc_pm_year))
+                (full_cal_df["temp_dt"].dt.month == month_idx) & (full_cal_df["temp_dt"].dt.year == cal_year))
         active_df = full_cal_df[mask].drop(columns=["temp_dt"]).copy()
     else:
         active_df = pd.DataFrame(columns=CONTENT_CAL_COLUMNS)
@@ -1321,9 +1318,6 @@ elif current_page == "$ Fundraising & Finance":
         </div>
         """, unsafe_allow_html=True
     )
-    
-    fin_mission = plan_mission
-    fin_cycle = plan_cycle
 
     events_df = load_finance_sheet(client, "fundraising_events", EVENTS_HEADERS)
     events_df = events_df[(events_df["mission"] == fin_mission) & (events_df["cycle"] == fin_cycle)].copy() if not events_df.empty else pd.DataFrame(columns=EVENTS_HEADERS)
@@ -1446,10 +1440,6 @@ elif current_page == "$ Fundraising & Finance":
         st.markdown("### ⊙ Organizational Goals")
         goal_cols = ["goal_id", "goal_name", "target_amount", "deadline", "purpose", "status"]
         goal_view = goals_df[goal_cols].copy() if not goals_df.empty else pd.DataFrame(columns=goal_cols)
-        
-        if goal_view.empty:
-            goal_view = pd.concat([goal_view, pd.DataFrame([{"status": "In Progress", "target_amount": 0}])], ignore_index=True)
-            
         goal_view["deadline"] = pd.to_datetime(goal_view["deadline"], errors="coerce").dt.date
         
         config = {
@@ -1523,7 +1513,7 @@ elif current_page == "▦ Planner":
         c_action, _ = st.columns([1, 4])
         with c_action:
             if st.button("+ Create Task", type="primary", use_container_width=True):
-                create_task_dialog(plan_mission, plan_cycle, plan_division if plan_division != "All" else list(DIVISIONS.keys())[0], member_opts, df_tasks, client, df_memb)
+                create_task_dialog(plan_mission, plan_cycle, plan_division if plan_division != "All" else list(DIVISIONS)[0], member_opts, df_tasks, client, df_memb)
 
         st.markdown("<br>", unsafe_allow_html=True)
         buckets = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
@@ -1584,7 +1574,7 @@ elif current_page == "▦ Planner":
             "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"], help="Board column for visual organization."),
             "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"], help="Which mission this belongs to."),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS.keys()), help="Which subteam is responsible."),
+            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS), help="Which subteam is responsible."),
             "assigned_to": st.column_config.SelectboxColumn("Assigned To", options=member_opts if member_opts else [""], help="Team member assigned to complete the work."),
             "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
             "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
@@ -1687,17 +1677,13 @@ elif current_page == "▦ Planner":
         if display_mem.empty:
             display_mem = pd.DataFrame(columns=PLANNER_MEMBERS_COLS)
         
-        pad_mem = []
-        for _ in range(3): pad_mem.append({"active": True})
-        display_mem = pd.concat([display_mem, pd.DataFrame(pad_mem)], ignore_index=True)
-        
         mem_config = {
             "member_id": None,
             "created_at": None,
             "updated_at": None,
             "member_name": st.column_config.TextColumn("Member Name", help="First and Last name"),
             "email": st.column_config.TextColumn("Email Address", help="Used for future notifications"),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS.keys())),
+            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS)),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"]),
             "role": st.column_config.TextColumn("Role", help="E.g., Structural Lead"),
             "active": st.column_config.CheckboxColumn("Active Team Member"),
