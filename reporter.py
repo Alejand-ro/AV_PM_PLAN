@@ -368,7 +368,14 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
     records = report_records_for_sheet(report, input_rows, competition)
     values = [[row.get(header, "") for header in headers] for row in records]
     if values:
-        worksheet.append_rows(values, value_input_option="USER_ENTERED")
+        for attempt in range(3):
+            try:
+                worksheet.append_rows(values, value_input_option="USER_ENTERED")
+                break
+            except gspread.exceptions.APIError:
+                if attempt == 2:
+                    raise
+                time.sleep(2.5)
     return len(values), deleted
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -446,8 +453,15 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
     df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
     
     data = [headers] + df_all[headers].values.tolist()
-    ws.clear()
-    ws.append_rows(data, value_input_option="USER_ENTERED")
+    for attempt in range(3):
+        try:
+            ws.clear()
+            ws.append_rows(data, value_input_option="USER_ENTERED")
+            break
+        except gspread.exceptions.APIError:
+            if attempt == 2:
+                raise
+            time.sleep(2.5)
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_finance_sheet(_client, sheet_name: str, headers: list[str]) -> pd.DataFrame:
@@ -503,8 +517,15 @@ def save_finance_sheet(_client, sheet_name: str, df_edited: pd.DataFrame, header
     df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>", "False"], "")
     
     data = [headers] + df_all[headers].values.tolist()
-    ws.clear()
-    ws.append_rows(data, value_input_option="USER_ENTERED")
+    for attempt in range(3):
+        try:
+            ws.clear()
+            ws.append_rows(data, value_input_option="USER_ENTERED")
+            break
+        except gspread.exceptions.APIError:
+            if attempt == 2:
+                raise
+            time.sleep(2.5)
 
 # --- PLANNER HELPERS ---
 def status_color(status):
@@ -567,10 +588,17 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
     merged_df.fillna("", inplace=True)
     
     ws = ensure_worksheet_safe(sh, sheet_name, cols)
-    ws.clear()
-    ws.update("1:1", [merged_df.columns.values.tolist()])
-    if not merged_df.empty:
-        ws.update("A2", merged_df.values.tolist())
+    for attempt in range(3):
+        try:
+            ws.clear()
+            ws.update("1:1", [merged_df.columns.values.tolist()])
+            if not merged_df.empty:
+                ws.update("A2", merged_df.values.tolist())
+            break
+        except gspread.exceptions.APIError:
+            if attempt == 2:
+                raise
+            time.sleep(2.5)
 
 def update_gantt_links(sh, edited_tasks, df_links):
     links_to_save = []
@@ -607,10 +635,17 @@ def update_gantt_links(sh, edited_tasks, df_links):
             
         merged_links.fillna("", inplace=True)
         ws_links = ensure_worksheet_safe(sh, "gantt_task_links", GANTT_TASK_LINKS_COLS)
-        ws_links.clear()
-        ws_links.update("1:1", [merged_links.columns.values.tolist()])
-        if not merged_links.empty:
-            ws_links.update("A2", merged_links.values.tolist())
+        for attempt in range(3):
+            try:
+                ws_links.clear()
+                ws_links.update("1:1", [merged_links.columns.values.tolist()])
+                if not merged_links.empty:
+                    ws_links.update("A2", merged_links.values.tolist())
+                break
+            except gspread.exceptions.APIError:
+                if attempt == 2:
+                    raise
+                time.sleep(2.5)
 
 def queue_notification(sh, task_row, df_notif, df_memb=None, custom_subject: str | None = None, custom_msg: str | None = None):
     recipient = task_row.get("assigned_to", "")
