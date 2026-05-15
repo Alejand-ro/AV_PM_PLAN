@@ -341,6 +341,7 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         if col not in df_all.columns:
             df_all[col] = ""
 
+    # Drop existing rows for this specific mission, cycle, and month/year
     if not df_all.empty:
         df_all["temp_dt"] = pd.to_datetime(df_all["planned_date"], errors="coerce")
         mask = (
@@ -351,11 +352,13 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         )
         df_all = df_all[~mask].drop(columns=["temp_dt"])
 
+    # Prepare edited df
     now_str = datetime.utcnow().isoformat() + "Z"
     
     clean_edited = []
     for _, row in df_edited.iterrows():
         r = row.to_dict()
+        # Skip truly blank rows (unless it's a "No post day")
         if not r.get("content_title") and not r.get("description") and r.get("platform") != "No post day":
             continue
             
@@ -368,12 +371,14 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         r["month"] = target_month
         r["updated_at"] = now_str
         
+        # Mark as done logic
         if r.get("status") == "Posted":
             if not r.get("actual_posted_date") or r.get("actual_posted_date") == "NaT":
                 r["actual_posted_date"] = date.today().strftime("%Y-%m-%d")
             if not r.get("marked_done_at"):
                 r["marked_done_at"] = now_str
         else:
+            # If changed back from posted, clear the actual date
             if r.get("actual_posted_date"):
                 r["actual_posted_date"] = ""
             if r.get("marked_done_at"):
@@ -390,6 +395,7 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         
     df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
     
+    # Write full sheet back safely
     data = [headers] + df_all[headers].values.tolist()
     worksheet.clear()
     worksheet.append_rows(data, value_input_option="USER_ENTERED")
@@ -417,6 +423,7 @@ def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[s
         if col not in df_all.columns:
             df_all[col] = ""
 
+    # Clear existing rows for this mission and cycle
     if not df_all.empty and "mission" in df_all.columns and "cycle" in df_all.columns:
         mask = (df_all["mission"] == mission) & (df_all["cycle"] == cycle)
         df_all = df_all[~mask]
@@ -427,6 +434,7 @@ def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[s
     for _, row in df_edited.iterrows():
         r = row.to_dict()
         
+        # Skip completely blank lines 
         if not str(r.get(id_col, "")) and not str(r.get("event_name", "")) and not str(r.get("amount", "")) and not str(r.get("goal_name", "")):
             continue
             
@@ -453,6 +461,12 @@ def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[s
     worksheet.append_rows(data, value_input_option="USER_ENTERED")
 
 # -----------------------------------------------------------------------------
+# SIDEBAR NAVIGATION & ROUTER
+# -----------------------------------------------------------------------------
+st.sidebar.header("⌖ Navigation")
+current_page = st.sidebar.radio("Go to", ["▦ Weekly Performance Report", "◫ Content Calendar", "$ Fundraising & Finance"])
+
+# -----------------------------------------------------------------------------
 # EARLY STATE INITIALIZATION (Allows theme & filter updates without double reload)
 # -----------------------------------------------------------------------------
 if "comp_radio" not in st.session_state:
@@ -471,50 +485,87 @@ else:
     active_divisions = DIVISIONS
 
 # -----------------------------------------------------------------------------
-# DYNAMIC THEME ENGINE
+# DYNAMIC VIBE THEME ENGINE
 # -----------------------------------------------------------------------------
-if competition == "Mars":
-    bg_top = "#1e293b"
+if current_page == "◫ Content Calendar":
+    # Content & Media Vibe (Purple / Magenta)
+    bg_top = "#2e1065" 
     bg_bot = "#000000"
-    side_top = "#1e293b"
-    side_bot = "#111827"
-    panel_bg = "#1e293b"
-    primary = "#ef4444"
-    primary_hover = "#dc2626"
+    side_top = "#2e1065"
+    side_bot = "#000000"
+    panel_bg = "#1e1b4b" 
+    primary = "#ec4899"  
+    primary_hover = "#db2777"
     primary_text = "#ffffff"
-    primary_shadow = "rgba(239, 68, 68, 0.25)"
-    logo_a_color = "#ef4444"
-    logo_a_shadow = "#7f1d1d"
-    logo_v_color = "#ffffff"
-    logo_v_shadow = "#94a3b8"
-elif competition == "Luna":
-    bg_top = "#334155"      
-    bg_bot = "#0f172a"      
-    side_top = "#334155"
-    side_bot = "#1e293b"
-    panel_bg = "#475569"    
-    primary = "#f8fafc"     
-    primary_hover = "#e2e8f0"
-    primary_text = "#1e3a8a" 
-    primary_shadow = "rgba(255, 255, 255, 0.20)"
-    logo_a_color = "#f8fafc"
-    logo_a_shadow = "#64748b"
-    logo_v_color = "#3b82f6"
-    logo_v_shadow = "#1e3a8a"
+    primary_shadow = "rgba(236, 72, 153, 0.25)"
+    logo_a_color = "#ec4899"
+    logo_a_shadow = "#831843"
+    logo_v_color = "#a855f7"
+    logo_v_shadow = "#581c87"
+    custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.5em; color: #ec4899; text-shadow: 2px 2px 0px #831843; font-style: normal; transform: translateY(-10px); display: inline-block;">[►]</span></div>'
+
+elif current_page == "$ Fundraising & Finance":
+    # Finance Vibe (Emerald / Mint Green)
+    bg_top = "#064e3b" 
+    bg_bot = "#000000"
+    side_top = "#064e3b"
+    side_bot = "#000000"
+    panel_bg = "#022c22"
+    primary = "#10b981"  
+    primary_hover = "#059669"
+    primary_text = "#ffffff"
+    primary_shadow = "rgba(16, 185, 129, 0.25)"
+    logo_a_color = "#10b981"
+    logo_a_shadow = "#064e3b"
+    logo_v_color = "#6ee7b7"
+    logo_v_shadow = "#047857"
+    custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v" style="margin-right: 5px;">V</span><span style="font-size: 0.6em; color: #10b981; text-shadow: 2px 2px 0px #064e3b; font-style: normal; transform: translateY(-8px); display: inline-block;">$</span></div>'
+
 else:
-    bg_top = "#1e293b"
-    bg_bot = "#000000"
-    side_top = "#1e293b"
-    side_bot = "#111827"
-    panel_bg = "#1e293b"
-    primary = "#3b82f6"
-    primary_hover = "#2563eb"
-    primary_text = "#ffffff"
-    primary_shadow = "rgba(59, 130, 246, 0.25)"
-    logo_a_color = "#ef4444"
-    logo_a_shadow = "#7f1d1d"
-    logo_v_color = "#3b82f6"
-    logo_v_shadow = "#1e3a8a"
+    # Standard Performance Vibe
+    custom_logo = '<div class="av-logo"><span class="a">A</span><span class="v">V</span></div>'
+    if competition == "Mars":
+        bg_top = "#1e293b"
+        bg_bot = "#000000"
+        side_top = "#1e293b"
+        side_bot = "#111827"
+        panel_bg = "#1e293b"
+        primary = "#ef4444"
+        primary_hover = "#dc2626"
+        primary_text = "#ffffff"
+        primary_shadow = "rgba(239, 68, 68, 0.25)"
+        logo_a_color = "#ef4444"
+        logo_a_shadow = "#7f1d1d"
+        logo_v_color = "#ffffff"
+        logo_v_shadow = "#94a3b8"
+    elif competition == "Luna":
+        bg_top = "#334155"      
+        bg_bot = "#0f172a"      
+        side_top = "#334155"
+        side_bot = "#1e293b"
+        panel_bg = "#475569"    
+        primary = "#f8fafc"     
+        primary_hover = "#e2e8f0"
+        primary_text = "#1e3a8a" 
+        primary_shadow = "rgba(255, 255, 255, 0.20)"
+        logo_a_color = "#f8fafc"
+        logo_a_shadow = "#64748b"
+        logo_v_color = "#3b82f6"
+        logo_v_shadow = "#1e3a8a"
+    else:
+        bg_top = "#1e293b"
+        bg_bot = "#000000"
+        side_top = "#1e293b"
+        side_bot = "#111827"
+        panel_bg = "#1e293b"
+        primary = "#3b82f6"
+        primary_hover = "#2563eb"
+        primary_text = "#ffffff"
+        primary_shadow = "rgba(59, 130, 246, 0.25)"
+        logo_a_color = "#ef4444"
+        logo_a_shadow = "#7f1d1d"
+        logo_v_color = "#3b82f6"
+        logo_v_shadow = "#1e3a8a"
 
 st.markdown(
     f"""
@@ -654,7 +705,7 @@ st.markdown(
         color: #ffffff !important;
     }}
     
-    /* Primary Accent Buttons (Dynamic Red or White) */
+    /* Primary Accent Buttons (Dynamic Theme) */
     button[kind="primary"], [data-testid="stFormSubmitButton"] > button {{
         background: var(--primary) !important;
         color: var(--primary-text) !important;
@@ -726,16 +777,6 @@ st.markdown(
         text-overflow: ellipsis;
         white-space: nowrap;
     }}
-    
-    .kpi {{ 
-        padding: 24px; 
-        border-radius: 16px; 
-        background: rgba(255,255,255,0.03); 
-        border: 1px solid var(--line); 
-        margin-bottom: 24px;
-    }}
-    .kpi-label {{ color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }}
-    .kpi-value {{ color:#ffffff; font-size:36px; font-weight:950; letter-spacing:-.06em; margin-top:8px; }}
 </style>
 """,
     unsafe_allow_html=True,
@@ -754,11 +795,6 @@ def plotly_theme(fig: go.Figure) -> go.Figure:
     fig.update_yaxes(gridcolor="rgba(255,255,255,.05)", zerolinecolor="rgba(255,255,255,.10)")
     return fig
 
-# -----------------------------------------------------------------------------
-# SIDEBAR NAVIGATION
-# -----------------------------------------------------------------------------
-st.sidebar.header("⌖ Navigation")
-current_page = st.sidebar.radio("Go to", ["▦ Weekly Performance Report", "◫ Content Calendar", "$ Fundraising & Finance"])
 
 if current_page == "▦ Weekly Performance Report":
     # -----------------------------------------------------------------------------
@@ -769,7 +805,7 @@ if current_page == "▦ Weekly Performance Report":
         <div class="hero">
         <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div>
                     <div class="eyebrow">Project AV • {competition} Mission Mode</div>
                     <div class="title">Weekly Performance Report</div>
@@ -1055,7 +1091,14 @@ if current_page == "▦ Weekly Performance Report":
     with col_a:
         save_clicked = st.button(f"☑ FINAL SUBMIT TO GOOGLE SHEETS", type="primary", use_container_width=True)
     with col_b:
-        st.code(st.secrets.get("SHEET_NAME", "AV PM Reports Database"), language="text")
+        json_bytes = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
+        st.download_button(
+            "⬇ Download backup JSON",
+            data=json_bytes,
+            file_name=f"{report['iso_year']}-W{report['iso_week']:02d}_{competition}_{division.replace(' ', '_').replace('&', 'and')}_weekly_report.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     if save_clicked:
         if not pm_name.strip():
@@ -1083,14 +1126,6 @@ if current_page == "▦ Weekly Performance Report":
             except Exception as exc:
                 st.error(f"⚠ Google Sheets submit failed: {exc}")
 
-    json_bytes = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
-    st.download_button(
-        "Download backup JSON",
-        data=json_bytes,
-        file_name=f"{report['iso_year']}-W{report['iso_week']:02d}_{competition}_{division.replace(' ', '_').replace('&', 'and')}_weekly_report.json",
-        mime="application/json",
-        use_container_width=True,
-    )
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -1130,7 +1165,7 @@ elif current_page == "◫ Content Calendar":
         <div class="hero">
           <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div>
                     <div class="eyebrow">Project AV • Planning</div>
                     <div class="title">Content Calendar</div>
@@ -1247,7 +1282,7 @@ elif current_page == "◫ Content Calendar":
 
     # --- CONTENT EDITOR ---
     st.markdown("### ▦ Content Editor")
-    st.markdown('<div class="chart-desc">ⓘ Edit rows directly. To add a new event, scroll to the bottom and click the empty row. Marking an item as "Posted" will automatically timestamp the execution.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="chart-desc">ⓘ Edit rows directly. To add a new event, scroll to the bottom and click the empty row. Marking an item as "Posted" will automatically timestamp the execution. Hover over the column headers for specific instructions.</div>', unsafe_allow_html=True)
     
     edit_cols = ["content_id", "planned_date", "platform", "content_title", "description", "content_type", "owner", "status", "actual_posted_date", "notes"]
     display_df = active_df[edit_cols].copy()
@@ -1359,7 +1394,7 @@ elif current_page == "$ Fundraising & Finance":
         <div class="hero">
           <div class="hero-content">
             <div class="av-logo-container">
-                <div class="av-logo"><span class="a">A</span><span class="v">V</span></div>
+                {custom_logo}
                 <div>
                     <div class="eyebrow">Project AV • Financial Administration</div>
                     <div class="title">Fundraising & Finance</div>
@@ -1484,7 +1519,7 @@ elif current_page == "$ Fundraising & Finance":
 
     with tab_evt:
         st.markdown("### ◈ Event Management")
-        st.markdown('<div class="chart-desc">ⓘ Create and manage fundraising initiatives. Net revenues will auto-calculate based on saved transactions and expenses.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="chart-desc">ⓘ Create and manage fundraising initiatives. Net revenues will auto-calculate based on saved transactions and expenses. Hover over the column headers for specific instructions.</div>', unsafe_allow_html=True)
         
         evt_cols = ["event_id", "event_name", "event_type", "planned_date", "actual_date", "location", "status", "expected_gross_revenue", "expected_expenses", "venue_confirmed", "permits_completed", "marketing_ready", "volunteers_ready"]
         evt_view = events_df[evt_cols].copy() if not events_df.empty else pd.DataFrame(columns=evt_cols)
@@ -1530,7 +1565,7 @@ elif current_page == "$ Fundraising & Finance":
 
     with tab_txn:
         st.markdown("### ▦ Income Transactions")
-        st.markdown('<div class="chart-desc">ⓘ Record all money received. These values will automatically aggregate to calculate Event Gross Revenue.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="chart-desc">ⓘ Record all money received. These values will automatically aggregate to calculate Event Gross Revenue. Hover over the column headers for specific instructions.</div>', unsafe_allow_html=True)
         
         txn_cols = ["transaction_id", "event_name", "transaction_date", "source_type", "source_name", "payment_method", "amount", "deposited"]
         txn_view = trans_df[txn_cols].copy() if not trans_df.empty else pd.DataFrame(columns=txn_cols)
@@ -1572,7 +1607,7 @@ elif current_page == "$ Fundraising & Finance":
 
     with tab_exp:
         st.markdown("### ▦ Expenses")
-        st.markdown('<div class="chart-desc">ⓘ Record all money spent. These values will automatically aggregate to calculate Event Net Revenue.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="chart-desc">ⓘ Record all money spent. These values will automatically aggregate to calculate Event Net Revenue. Hover over the column headers for specific instructions.</div>', unsafe_allow_html=True)
         
         exp_cols = ["expense_id", "event_name", "expense_date", "vendor", "item_description", "category", "amount", "reimbursed"]
         exp_view = exp_df[exp_cols].copy() if not exp_df.empty else pd.DataFrame(columns=exp_cols)
@@ -1613,7 +1648,7 @@ elif current_page == "$ Fundraising & Finance":
 
     with tab_goal:
         st.markdown("### ⊙ Organizational Goals")
-        st.markdown('<div class="chart-desc">ⓘ Set macro financial targets to measure total fundraising success against.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="chart-desc">ⓘ Set macro financial targets to measure total fundraising success against. Hover over the column headers for specific instructions.</div>', unsafe_allow_html=True)
         
         goal_cols = ["goal_id", "goal_name", "target_amount", "deadline", "purpose", "status"]
         goal_view = goals_df[goal_cols].copy() if not goals_df.empty else pd.DataFrame(columns=goal_cols)
