@@ -173,6 +173,9 @@ def get_draft_worksheet():
     draft_worksheet_name = st.secrets.get("DRAFT_WORKSHEET_NAME", "drafts")
     return get_or_create_worksheet(draft_worksheet_name, DRAFT_COLUMNS, rows=1000)
 
+def get_content_calendar_worksheet():
+    return get_or_create_worksheet("content_calendar", CONTENT_CAL_COLUMNS, rows=2000)
+
 def ensure_headers(worksheet, required_columns: list[str]) -> list[str]:
     existing = worksheet.row_values(1)
     existing = [str(h).strip() for h in existing if str(h).strip()]
@@ -524,7 +527,6 @@ def queue_notification(sh, task_row, df_notif):
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }])
     save_planner_data(sh, new_notif, df_notif, PLANNER_NOTIFICATIONS_COLS, "planner_notifications_queue", "notification_id")
-
 
 # -----------------------------------------------------------------------------
 # SIDEBAR NAVIGATION & ROUTER
@@ -1105,7 +1107,6 @@ elif current_page == "$ Fundraising & Finance":
     f1, f2, f3, f4 = st.columns(4)
     fin_mission = f1.selectbox("Mission Filter", ["General", "Mars", "Luna"], index=0)
     fin_cycle = f2.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
-    
     fin_month = f3.selectbox("Month Filter", MONTHS_LIST, index=date.today().month - 1)
     fin_year = f4.selectbox("Year Filter", [date.today().year - 1, date.today().year, date.today().year + 1], index=1)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1190,6 +1191,10 @@ elif current_page == "$ Fundraising & Finance":
             "status": st.column_config.SelectboxColumn("Status", options=["Planned", "In Progress", "Completed", "Cancelled", "Delayed", "Needs Follow-Up"], help="Current operational phase."),
             "expected_gross_revenue": st.column_config.NumberColumn("Exp. Revenue $", help="Estimated total income before expenses."),
             "expected_expenses": st.column_config.NumberColumn("Exp. Cost $", help="Estimated total cost to run the event."),
+            "venue_confirmed": st.column_config.CheckboxColumn("Venue", help="Is the location secured?"),
+            "permits_completed": st.column_config.CheckboxColumn("Permits", help="Are all legal/campus permits approved?"),
+            "marketing_ready": st.column_config.CheckboxColumn("Marketing", help="Are flyers/social posts ready?"),
+            "volunteers_ready": st.column_config.CheckboxColumn("Vols", help="Is the team staffing finalized?"),
         }
         
         edited_evt = st.data_editor(evt_view, num_rows="dynamic", use_container_width=True, height=450, column_config=config)
@@ -1328,7 +1333,7 @@ elif current_page == "▦ Planner":
         f_col1, f_col2, f_col3, f_col4 = st.columns(4)
         mission_filter = f_col1.selectbox("Mission", ["All", "Mars", "Luna", "General"], index=["All", "Mars", "Luna", "General"].index(competition) if competition in ["Mars", "Luna", "General"] else 0)
         cycle_filter = f_col2.selectbox("Cycle", ["All"] + DYNAMIC_CYCLES)
-        division_filter = f_col3.selectbox("Division", ["All"] + list(DIVISIONS.keys()))
+        division_filter = f_col3.selectbox("Division", ["All"] + list(active_divisions))
         member_opts = df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else []
         assigned_filter = f_col4.selectbox("Assigned To", ["All"] + member_opts)
         
@@ -1386,17 +1391,17 @@ elif current_page == "▦ Planner":
             "updated_at": None,
             "delay_flag": None,
             "delay_days": None,
-            "title": st.column_config.TextColumn("Task Title", help="Name of the task"),
-            "status": st.column_config.SelectboxColumn("Status", options=["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"]),
-            "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]),
-            "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"]),
-            "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"]),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS.keys())),
-            "assigned_to": st.column_config.SelectboxColumn("Assigned To", options=member_opts if member_opts else [""]),
-            "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD"),
-            "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD"),
-            "completed_date": st.column_config.DateColumn("Completed Date", format="YYYY-MM-DD"),
-            "gantt_dependency_type": st.column_config.SelectboxColumn("Gantt Dep.", options=["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"])
+            "title": st.column_config.TextColumn("Task Title", help="Short name or description of the task."),
+            "status": st.column_config.SelectboxColumn("Status", options=["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"], help="Current progress state."),
+            "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"], help="Board column for visual organization."),
+            "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
+            "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"], help="Which mission this belongs to."),
+            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS), help="Which subteam is responsible."),
+            "assigned_to": st.column_config.SelectboxColumn("Assigned To", options=member_opts if member_opts else [""], help="Team member assigned to complete the work."),
+            "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
+            "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
+            "completed_date": st.column_config.DateColumn("Completed Date", format="YYYY-MM-DD", help="When it was actually finished."),
+            "gantt_dependency_type": st.column_config.SelectboxColumn("Gantt Dep.", options=["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this links to the master Gantt schedule.")
         }
         
         edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=600, column_config=config)
