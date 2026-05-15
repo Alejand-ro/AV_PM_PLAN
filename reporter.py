@@ -314,6 +314,7 @@ def append_report_to_sheet(report: dict, input_rows: list[dict], competition: st
         worksheet.append_rows(values, value_input_option="USER_ENTERED")
     return len(values), deleted
 
+
 # --- CONTENT CALENDAR HELPER FUNCTIONS ---
 @st.cache_data(ttl=60, show_spinner=False)
 def load_content_calendar(force_refresh=0) -> pd.DataFrame:
@@ -340,7 +341,6 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         if col not in df_all.columns:
             df_all[col] = ""
 
-    # Drop existing rows for this specific mission, cycle, and month/year
     if not df_all.empty:
         df_all["temp_dt"] = pd.to_datetime(df_all["planned_date"], errors="coerce")
         mask = (
@@ -351,13 +351,11 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         )
         df_all = df_all[~mask].drop(columns=["temp_dt"])
 
-    # Prepare edited df
     now_str = datetime.utcnow().isoformat() + "Z"
     
     clean_edited = []
     for _, row in df_edited.iterrows():
         r = row.to_dict()
-        # Skip truly blank rows (unless it's a "No post day")
         if not r.get("content_title") and not r.get("description") and r.get("platform") != "No post day":
             continue
             
@@ -370,14 +368,12 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         r["month"] = target_month
         r["updated_at"] = now_str
         
-        # Mark as done logic
         if r.get("status") == "Posted":
             if not r.get("actual_posted_date") or r.get("actual_posted_date") == "NaT":
                 r["actual_posted_date"] = date.today().strftime("%Y-%m-%d")
             if not r.get("marked_done_at"):
                 r["marked_done_at"] = now_str
         else:
-            # If changed back from posted, clear the actual date
             if r.get("actual_posted_date"):
                 r["actual_posted_date"] = ""
             if r.get("marked_done_at"):
@@ -394,7 +390,6 @@ def save_content_calendar_month(df_edited: pd.DataFrame, mission: str, cycle: st
         
     df_all = df_all.fillna("").astype(str).replace(["NaT", "nan", "None", "<NA>"], "")
     
-    # Write full sheet back safely
     data = [headers] + df_all[headers].values.tolist()
     worksheet.clear()
     worksheet.append_rows(data, value_input_option="USER_ENTERED")
@@ -422,7 +417,6 @@ def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[s
         if col not in df_all.columns:
             df_all[col] = ""
 
-    # Clear existing rows for this mission and cycle
     if not df_all.empty and "mission" in df_all.columns and "cycle" in df_all.columns:
         mask = (df_all["mission"] == mission) & (df_all["cycle"] == cycle)
         df_all = df_all[~mask]
@@ -433,7 +427,6 @@ def save_finance_sheet(sheet_name: str, df_edited: pd.DataFrame, headers: list[s
     for _, row in df_edited.iterrows():
         r = row.to_dict()
         
-        # Skip completely blank lines 
         if not str(r.get(id_col, "")) and not str(r.get("event_name", "")) and not str(r.get("amount", "")) and not str(r.get("goal_name", "")):
             continue
             
@@ -646,32 +639,59 @@ st.markdown(
         height: 3px !important;
     }}
 
-    /* Standard Buttons (Blue fallback) */
+    /* Standard Buttons (Dark Glass) */
     .stButton > button {{
-        background: #2563eb !important; 
-        color: #ffffff !important;
+        background: rgba(255,255,255,0.05) !important; 
+        color: #f8fafc !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 12px !important;
-        font-weight: 800 !important;
+        font-weight: 700 !important;
+        transition: all 0.3s ease !important;
     }}
-    .stButton > button * {{ color: #ffffff !important; }}
+    .stButton > button:hover {{
+        background: rgba(255,255,255,0.1) !important;
+        border-color: rgba(255,255,255,0.3) !important;
+        color: #ffffff !important;
+    }}
     
     /* Primary Accent Buttons (Dynamic Red or White) */
-    button[kind="primary"], [data-testid="stFormSubmitButton"] > button, .stDownloadButton > button {{
+    button[kind="primary"], [data-testid="stFormSubmitButton"] > button {{
         background: var(--primary) !important;
         color: var(--primary-text) !important;
         box-shadow: 0 8px 20px var(--primary-shadow) !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
         border-radius: 12px !important;
         font-weight: 800 !important;
+        transition: all 0.3s ease !important;
     }}
-    button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button *, .stDownloadButton > button * {{
+    button[kind="primary"] *, [data-testid="stFormSubmitButton"] > button * {{
         color: var(--primary-text) !important;
     }}
-    
-    button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover, .stDownloadButton > button:hover {{ 
+    button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] > button:hover {{ 
         background: var(--primary-hover) !important; 
-        transform: translateY(-1px); 
+        transform: translateY(-2px); 
+    }}
+
+    /* Secondary / Backup Buttons (Download JSON) */
+    .stDownloadButton > button {{
+        background: rgba(0,0,0,0.4) !important;
+        color: #94a3b8 !important;
+        border: 1px dashed rgba(255,255,255,0.2) !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+        transition: all 0.3s ease !important;
+    }}
+    .stDownloadButton > button * {{
+        color: #94a3b8 !important;
+    }}
+    .stDownloadButton > button:hover {{
+        background: rgba(0,0,0,0.8) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255,255,255,0.4) !important;
+    }}
+    .stDownloadButton > button:hover * {{
+        color: #ffffff !important;
     }}
     
     /* Fix inputs */
@@ -1033,7 +1053,7 @@ if current_page == "▦ Weekly Performance Report":
 
     col_a, col_b = st.columns([1, 2])
     with col_a:
-        save_clicked = st.button(f"► Final Submit to Google Sheets", type="primary", use_container_width=True)
+        save_clicked = st.button(f"☑ FINAL SUBMIT TO GOOGLE SHEETS", type="primary", use_container_width=True)
     with col_b:
         st.code(st.secrets.get("SHEET_NAME", "AV PM Reports Database"), language="text")
 
@@ -1540,6 +1560,7 @@ elif current_page == "$ Fundraising & Finance":
                 meta = trans_df[[c for c in meta_cols if c in trans_df.columns]].dropna(subset=["transaction_id"])
                 final = pd.merge(final, meta, on="transaction_id", how="left")
             
+            # Map event_name back to event_id
             name_to_id = dict(zip(events_df["event_name"], events_df["event_id"])) if not events_df.empty else {}
             final["event_id"] = final["event_name"].map(name_to_id).fillna("")
             
