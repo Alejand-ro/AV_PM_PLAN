@@ -116,7 +116,7 @@ GOALS_HEADERS = [
 PLANNER_TASKS_COLS = [
     "task_id", "mission", "cycle", "division", "bucket", "title", "description", 
     "assigned_to", "cc_people", "created_by", "start_date", "due_date", "completed_date", 
-    "status", "priority", "percent_complete", "week_start", "linked_gantt_task", 
+    "status", "priority", "percent_complete", "week_start", "subassembly", "linked_gantt_task", 
     "linked_gantt_phase", "gantt_dependency_type", "blocks_gantt_start", 
     "blocks_gantt_completion", "delay_flag", "delay_days", "late_reason", 
     "deliverable_link", "tags", "created_at", "updated_at"
@@ -686,6 +686,7 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
     with st.form("new_task_form"):
         title = st.text_input("Task Title *")
         desc = st.text_area("Description")
+        subassembly = st.text_input("Subassembly")
         
         c1, c2 = st.columns(2)
         assignee = c1.selectbox("Assign To", ["Unassigned"] + members, help="Start typing a name to search the directory.")
@@ -716,6 +717,7 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
                     "bucket": bucket,
                     "title": title,
                     "description": desc,
+                    "subassembly": subassembly,
                     "assigned_to": assignee if assignee != "Unassigned" else "",
                     "priority": priority,
                     "status": "Not Started" if bucket != "Completed" else "Completed",
@@ -749,6 +751,7 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
     with st.form(f"task_detail_form_{task_id}"):
         title = st.text_input("Task Title", value=str(task.get("title", "")))
         description = st.text_area("Description", value=str(task.get("description", "")))
+        subassembly = st.text_input("Subassembly", value=str(task.get("subassembly", "")))
         
         c1, c2 = st.columns(2)
         selected_assignee = c1.selectbox("Assigned To", assignee_options, index=assignee_options.index(assignee) if assignee in assignee_options else 0)
@@ -769,6 +772,7 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             updated_task = task.copy()
             updated_task["title"] = title
             updated_task["description"] = description
+            updated_task["subassembly"] = subassembly
             updated_task["assigned_to"] = selected_assignee if selected_assignee != "Unassigned" else ""
             updated_task["status"] = selected_status
             updated_task["priority"] = selected_priority
@@ -1718,6 +1722,26 @@ elif current_page == "▦ Planner":
         if plan_assignee != "All":
             view_df = view_df[view_df["assigned_to"] == plan_assignee]
 
+    # Initialize pending batch changes state
+    if "pending_board_changes" not in st.session_state:
+        st.session_state.pending_board_changes = {}
+
+    # Top-right filters
+    _, f_stat, f_sub = st.columns([2, 1, 1])
+    with f_stat:
+        status_opts = [""] + sorted(view_df["status"].dropna().unique().tolist()) if not view_df.empty else [""]
+        filter_status = st.multiselect("Filter by Status", status_opts, default=[])
+    with f_sub:
+        sub_opts = [""] + sorted(view_df["subassembly"].fillna("").unique().tolist()) if not view_df.empty else [""]
+        sub_opts = [s for s in sub_opts if s]  # Remove empty strings
+        filter_sub = st.multiselect("Filter by Subassembly", sub_opts, default=[])
+    
+    # Apply filters
+    if filter_status:
+        view_df = view_df[view_df["status"].isin(filter_status)]
+    if filter_sub:
+        view_df = view_df[view_df["subassembly"].isin(filter_sub)]
+
     tabs = st.tabs(["▦ Board View", "▦ Bulk Table Editor", "❖ Team Directory"])
     
     with tabs[0]:
@@ -1727,6 +1751,46 @@ elif current_page == "▦ Planner":
         with c_action:
             if st.button("+ Create Task", type="primary", use_container_width=True):
                 create_task_dialog(plan_mission, plan_cycle, plan_division, member_opts, df_tasks, client, df_memb)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Save Board Updates button
+        if st.button("💾 Save Board Updates", type="primary"):
+            if st.session_state.pending_board_changes:
+                # Status to bucket mapping
+                status_to_bucket = {
+                    "In Progress": "In Progress",
+                    "Blocked": "Waiting / Blocked",
+                    "In Review": "Review",
+                    "Completed": "Completed",
+                    "Not Started": "Backlog"
+                }
+                
+                # Collect all tasks to save
+                tasks_to_update = []
+                for task_id, new_status in st.session_state.pending_board_changes.items():
+                    task_row = df_tasks[df_tasks["task_id"] == task_id]
+                    if not task_row.empty:
+                        updated = task_row.iloc[0].to_dict()
+                        updated["status"] = new_status
+                        updated["bucket"] = status_to_bucket.get(new_status, updated.get("bucket", "Backlog"))
+                        if new_status == "Completed" and not str(updated.get("completed_date", "")).strip():
+                            updated["completed_date"] = date.today().strftime("%Y-%m-%d")
+                        updated["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        tasks_to_update.append(updated)
+                        
+                        # Queue notification if needed
+                        if new_status in ["Completed", "Blocked"] and updated.get("assigned_to", ""):
+                            queue_notification(client, updated, df_notif, df_memb)
+                
+                # One bulk save to Google Sheets
+                if tasks_to_update:
+                    save_planner_data(client, pd.DataFrame(tasks_to_update), df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+                    st.session_state.pending_board_changes = {}
+                    st.success(f"✓ Saved {len(tasks_to_update)} task(s) to board.")
+                    st.rerun()
+            else:
+                st.info("No changes to save.")
 
         st.markdown("<br>", unsafe_allow_html=True)
         buckets = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
@@ -1744,21 +1808,17 @@ elif current_page == "▦ Planner":
                             st.markdown(f"**◈ {row['title']}**")
                             st.markdown(f"<span style='color:{p_color}; font-size:12px;'>■ {row.get('priority')}</span> | <span style='color:{s_color}; font-size:12px;'>● {row.get('status')}</span>", unsafe_allow_html=True)
                             
+                            if row.get("subassembly"):
+                                st.caption(f"⚙ {row.get('subassembly')}")
+                            
                             current_status = str(row.get("status", "Not Started")) or "Not Started"
                             status_options = ["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"]
                             status_index = status_options.index(current_status) if current_status in status_options else 0
                             new_status = st.selectbox("Status", status_options, index=status_index, key=f"status_{row['task_id']}")
                             
                             if new_status != current_status:
-                                updated_task = row.to_dict()
-                                updated_task["status"] = new_status
-                                if new_status == "Completed" and not str(updated_task.get("completed_date", "")).strip():
-                                    updated_task["completed_date"] = date.today().strftime("%Y-%m-%d")
-                                save_planner_data(client, pd.DataFrame([updated_task]), df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
-                                if new_status in ["Completed", "Blocked"] and updated_task.get("assigned_to", ""):
-                                    recipient, role = queue_notification(client, updated_task, df_notif, df_memb)
-                                    st.success(f"Notification queued for {recipient or updated_task.get('assigned_to', '')}.")
-                                st.rerun()
+                                st.session_state.pending_board_changes[row['task_id']] = new_status
+                                st.info(f"Status queued to: {new_status}. Click 'Save Board Updates' to apply.")
                             
                             asign = row.get('assigned_to', 'Unassigned')
                             if asign != 'Unassigned' and not df_memb.empty:
