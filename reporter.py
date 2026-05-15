@@ -515,7 +515,13 @@ def priority_color(priority):
     colors = {"Low": "#6b7280", "Medium": "#3b82f6", "High": "#f97316", "Critical": "#ef4444"}
     return colors.get(priority, "#6b7280")
 
-def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col):
+def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, client=None):
+    edited_df = edited_df.copy()
+    for c in cols:
+        if c not in edited_df.columns:
+            edited_df[c] = ""
+    edited_df = edited_df.astype(object)
+
     for idx, row in edited_df.iterrows():
         if not row.get(id_col) or pd.isna(row.get(id_col)) or str(row.get(id_col)).strip() == "":
             edited_df.at[idx, id_col] = str(uuid.uuid4())
@@ -656,7 +662,7 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
         bucket = c2.selectbox("Bucket", ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"])
         
         c3, c4 = st.columns(2)
-        due_date = c3.date_input("Due Date", value=None)
+        due_date = c3.date_input("Due Date", value=date.today())
         priority = c4.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
         
         submit = st.form_submit_button("Create Task", type="primary", use_container_width=True)
@@ -696,17 +702,49 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
     task = task_rows.iloc[0].to_dict()
     assignee = task.get("assigned_to", "Unassigned")
     email, role = get_member_contact(assignee, df_memb)
+    assignee_options = ["Unassigned"] + (df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else [])
+    status_options = ["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"]
+    priority_options = ["Low", "Medium", "High", "Critical"]
+    bucket_options = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
 
     st.markdown(f"### ◈ {task.get('title', 'Untitled Task')}")
-    st.markdown(f"**Mission:** {task.get('mission', '')}  ")
-    st.markdown(f"**Division:** {task.get('division', '')}  ")
-    st.markdown(f"**Status:** {task.get('status', '')}  ")
-    st.markdown(f"**Assigned To:** {assignee} {f'(✉ {email} | ⚙ {role})' if email or role else ''}")
-    st.markdown(f"**Due Date:** {task.get('due_date', '')}  ")
-    st.markdown(f"**Priority:** {task.get('priority', '')}  ")
-    st.markdown(f"**Bucket:** {task.get('bucket', '')}  ")
-    st.markdown("---")
-    st.markdown(f"**Description**\n\n{task.get('description', 'No description provided.')}")
+    with st.form(f"task_detail_form_{task_id}"):
+        title = st.text_input("Task Title", value=str(task.get("title", "")))
+        description = st.text_area("Description", value=str(task.get("description", "")))
+        
+        c1, c2 = st.columns(2)
+        selected_assignee = c1.selectbox("Assigned To", assignee_options, index=assignee_options.index(assignee) if assignee in assignee_options else 0)
+        selected_status = c2.selectbox("Status", status_options, index=status_options.index(str(task.get("status", "Not Started"))) if str(task.get("status", "Not Started")) in status_options else 0)
+        
+        c3, c4 = st.columns(2)
+        due_date_value = pd.to_datetime(task.get("due_date", ""), errors="coerce")
+        due_date = c3.date_input("Due Date", value=due_date_value.date() if pd.notnull(due_date_value) else date.today())
+        selected_priority = c4.selectbox("Priority", priority_options, index=priority_options.index(str(task.get("priority", "Medium"))) if str(task.get("priority", "Medium")) in priority_options else 1)
+        
+        selected_bucket = st.selectbox("Bucket", bucket_options, index=bucket_options.index(str(task.get("bucket", "Backlog"))) if str(task.get("bucket", "Backlog")) in bucket_options else 0)
+        st.markdown(f"**Mission:** {task.get('mission', '')}  ")
+        st.markdown(f"**Division:** {task.get('division', '')}  ")
+        st.markdown("---")
+
+        submitted = st.form_submit_button("Save Task")
+        if submitted:
+            updated_task = task.copy()
+            updated_task["title"] = title
+            updated_task["description"] = description
+            updated_task["assigned_to"] = selected_assignee if selected_assignee != "Unassigned" else ""
+            updated_task["status"] = selected_status
+            updated_task["priority"] = selected_priority
+            updated_task["bucket"] = selected_bucket
+            updated_task["due_date"] = due_date.strftime("%Y-%m-%d")
+            if selected_status == "Completed" and not str(updated_task.get("completed_date", "")).strip():
+                updated_task["completed_date"] = date.today().strftime("%Y-%m-%d")
+            updated_task["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            save_planner_data(sh, pd.DataFrame([updated_task]), df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+            if selected_status in ["Completed", "Blocked"] and updated_task.get("assigned_to", ""):
+                queue_notification(sh, updated_task, df_notif, df_memb)
+            st.success("Task updated successfully.")
+            st.experimental_rerun()
 
     checklist = df_check[df_check["task_id"] == task_id].copy() if not df_check.empty else pd.DataFrame(columns=PLANNER_CHECKLIST_COLS)
     if not checklist.empty:
