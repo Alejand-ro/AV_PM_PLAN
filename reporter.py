@@ -588,17 +588,20 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
     merged_df.fillna("", inplace=True)
     
     ws = ensure_worksheet_safe(sh, sheet_name, cols)
+    
     for attempt in range(3):
         try:
             ws.clear()
             ws.update("1:1", [merged_df.columns.values.tolist()])
             if not merged_df.empty:
                 ws.update("A2", merged_df.values.tolist())
-            break
-        except gspread.exceptions.APIError:
-            if attempt == 2:
-                raise
-            time.sleep(2.5)
+            break # Success, exit loop
+        except Exception as e:
+            if attempt == 2: # If it fails 3 times, crash gracefully
+                st.error("Google Sheets API is busy. Please try saving again in a few seconds.")
+            time.sleep(3) # Wait 3 seconds for Google's rate limit to reset before trying again
+    
+    st.cache_data.clear() # Reset cache
 
 def update_gantt_links(sh, edited_tasks, df_links):
     links_to_save = []
