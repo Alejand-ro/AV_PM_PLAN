@@ -124,9 +124,21 @@ PLANNER_TASKS_COLS = [
 
 PLANNER_CHECKLIST_COLS = ["checklist_item_id", "task_id", "item_text", "completed", "completed_by", "completed_at", "created_at", "updated_at"]
 PLANNER_COMMENTS_COLS = ["comment_id", "task_id", "author", "comment", "created_at"]
-PLANNER_MEMBERS_COLS = ["member_id", "member_name", "email", "division", "mission", "role", "active", "notes", "created_at", "updated_at"]
+PLANNER_MEMBERS_COLS = ["member_id", "member_name", "email", "mission", "mars_division", "luna_division", "role", "active", "notes", "created_at", "updated_at"]
 PLANNER_NOTIFICATIONS_COLS = ["notification_id", "task_id", "notification_type", "recipient", "cc_people", "subject", "message", "status", "created_at", "sent_at", "error"]
 GANTT_TASK_LINKS_COLS = ["link_id", "mission", "cycle", "planner_task_id", "planner_task_title", "linked_gantt_task", "linked_gantt_phase", "blocks_gantt_start", "blocks_gantt_completion", "delay_flag", "delay_days", "status", "created_at", "updated_at"]
+
+SUBASSEMBLIES = {
+    "Vehicle Design & Structures": ["Rover Chassis", "Suspension", "Drive Train", "Astrobio Payload CAD", "Physical Design Phase", "System Integration"],
+    "Robotic Arm": ["Robotic Arm Mechanics", "End Effector", "Arm Electronics", "Arm Firmware / Inverse Kinematics"],
+    "Software & Hardware": ["Front-end GUI", "Base Station Software", "Base Station Hardware", "Autonomous Navigation", "Computer Vision / CV"],
+    "Power and Electrical Systems": ["BMS (Battery Management)", "Telemetry", "Motor Controllers", "Power Distribution Board", "Wiring Harness"],
+    "Astrobiology": ["Life Detection Assays", "Chemical Analysis", "Geology / Spectrometry", "Habitability Assessment"]
+}
+
+SUBASSEMBLY_GANTT_PHASES = {
+    "Physical Design Phase": "Physical Design Phase"
+}
 
 PLATFORM_COLORS = {"No post day": "#ef4444", "Outreach Activity": "#f97316", "LinkedIn": "#eab308", "Email": "#22c55e", "X": "#2dd4bf", "TikTok": "#38bdf8", "Facebook": "#c084fc", "YouTube": "#f43f5e", "Instagram": "#d946ef", "Other": "#94a3b8"}
 STATUS_SYMBOLS = {"Planned": "◌", "In Progress": "◐", "Posted": "●", "Missed": "⚠", "Cancelled": "×", "Rescheduled": "↷"}
@@ -252,10 +264,21 @@ def get_mission_divisions(mission: str, df_memb: pd.DataFrame) -> list[str]:
     if not mission:
         return list(DIVISIONS)
     if df_memb is not None and not df_memb.empty:
-        divisions = df_memb[df_memb["mission"] == mission]["division"].dropna().unique().tolist()
+        divisions = []
+        if mission == "Mars":
+            if "mars_division" in df_memb.columns:
+                divisions += df_memb[df_memb["mission"].isin(["Mars", "Both"])]["mars_division"].dropna().unique().tolist()
+        elif mission == "Luna":
+            if "luna_division" in df_memb.columns:
+                divisions += df_memb[df_memb["mission"].isin(["Luna", "Both"])]["luna_division"].dropna().unique().tolist()
+        elif mission == "Both":
+            if "mars_division" in df_memb.columns:
+                divisions += df_memb[df_memb["mission"].isin(["Mars", "Both"])]["mars_division"].dropna().unique().tolist()
+            if "luna_division" in df_memb.columns:
+                divisions += df_memb[df_memb["mission"].isin(["Luna", "Both"])]["luna_division"].dropna().unique().tolist()
         divisions = [str(d).strip() for d in divisions if str(d).strip()]
         if divisions:
-            return sorted(divisions)
+            return sorted(set(divisions))
     mission_lower = mission.lower()
     candidates = [str(d) for d in DIVISIONS if mission_lower in str(d).lower()]
     if candidates:
@@ -568,6 +591,10 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
                     
             edited_df.at[idx, "delay_flag"] = delay_flag
             edited_df.at[idx, "delay_days"] = delay_days
+
+            subassembly_key = str(row.get("subassembly", "")).strip()
+            if subassembly_key in SUBASSEMBLY_GANTT_PHASES:
+                edited_df.at[idx, "linked_gantt_phase"] = SUBASSEMBLY_GANTT_PHASES[subassembly_key]
     
     for c in cols:
         if c not in edited_df.columns:
@@ -708,7 +735,8 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
     with st.form("new_task_form"):
         title = st.text_input("Task Title *")
         desc = st.text_area("Description")
-        subassembly = st.text_input("Subassembly")
+        subassembly_options = SUBASSEMBLIES.get(division, [])
+        subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0, help="Select the URC subassembly for this division.")
         
         c1, c2 = st.columns(2)
         selected_assignees = c1.multiselect("Assign To", members, default=[], help="Start typing names to search the directory.")
@@ -772,12 +800,16 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
     status_options = ["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"]
     priority_options = ["Low", "Medium", "High", "Critical"]
     bucket_options = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
+    subassembly_options = SUBASSEMBLIES.get(task.get("division", ""), [])
+    current_subassembly = str(task.get("subassembly", ""))
+    if current_subassembly and current_subassembly not in subassembly_options:
+        subassembly_options = [current_subassembly] + subassembly_options
 
     st.markdown(f"### ◈ {task.get('title', 'Untitled Task')}")
     with st.form(f"task_detail_form_{task_id}"):
         title = st.text_input("Task Title", value=str(task.get("title", "")))
         description = st.text_area("Description", value=str(task.get("description", "")))
-        subassembly = st.text_input("Subassembly", value=str(task.get("subassembly", "")))
+        subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0 if not current_subassembly else ([""] + subassembly_options).index(current_subassembly) if current_subassembly in subassembly_options else 0)
         
         c1, c2 = st.columns(2)
         selected_assignee = c1.multiselect("Assigned To", assignee_options, default=current_assignees)
@@ -1742,11 +1774,16 @@ elif current_page == "▦ Planner":
     df_links = fetch_cached_df("gantt_task_links", GANTT_TASK_LINKS_COLS, False)
     df_notif = fetch_cached_df("planner_notifications_queue", PLANNER_NOTIFICATIONS_COLS, False)
     
+    selected_board_div = st.selectbox("Select Division to View Planner", ["-- Select Division --"] + list(DIVISIONS))
+    if selected_board_div == "-- Select Division --":
+        st.info("Please select a division to load the planner.")
+        st.stop()
+
     view_df = df_tasks.copy()
     if not view_df.empty:
         view_df = view_df[view_df["mission"] == plan_mission]
         view_df = view_df[view_df["cycle"] == plan_cycle]
-        view_df = view_df[view_df["division"] == plan_division]
+        view_df = view_df[view_df["division"] == selected_board_div]
         if plan_assignee != "All":
             view_df = view_df[view_df["assigned_to"].fillna("").apply(lambda x: plan_assignee in normalize_assignees(x))]
 
@@ -1754,21 +1791,36 @@ elif current_page == "▦ Planner":
     if "pending_board_changes" not in st.session_state:
         st.session_state.pending_board_changes = {}
 
-    # Top-right filters
-    _, f_stat, f_sub = st.columns([2, 1, 1])
+    # Top-right filters and sorting
+    _, f_stat, f_sub, f_sort = st.columns([2, 1, 1, 1])
     with f_stat:
-        status_opts = [""] + sorted(view_df["status"].dropna().unique().tolist()) if not view_df.empty else [""]
+        status_opts = sorted(view_df["status"].dropna().unique().tolist()) if not view_df.empty else []
         filter_status = st.multiselect("Filter by Status", status_opts, default=[])
     with f_sub:
-        sub_opts = [""] + sorted(view_df["subassembly"].fillna("").unique().tolist()) if not view_df.empty else [""]
-        sub_opts = [s for s in sub_opts if s]  # Remove empty strings
+        sub_opts = sorted(view_df["subassembly"].fillna("").unique().tolist()) if not view_df.empty else []
         filter_sub = st.multiselect("Filter by Subassembly", sub_opts, default=[])
+    with f_sort:
+        sort_by = st.selectbox("Sort By", ["Priority", "Due Date", "Subassembly", "Status"], index=0)
     
     # Apply filters
     if filter_status:
         view_df = view_df[view_df["status"].isin(filter_status)]
     if filter_sub:
         view_df = view_df[view_df["subassembly"].isin(filter_sub)]
+
+    # Apply sorting
+    if not view_df.empty:
+        if sort_by == "Priority":
+            priority_order = ["Critical", "High", "Medium", "Low", ""]
+            view_df["_priority_sort"] = pd.Categorical(view_df["priority"].fillna(""), categories=priority_order, ordered=True)
+            view_df = view_df.sort_values(by=["_priority_sort", "due_date"], ascending=[True, True]).drop(columns=["_priority_sort"])
+        elif sort_by == "Due Date":
+            view_df["_due_date_sort"] = pd.to_datetime(view_df["due_date"], errors="coerce")
+            view_df = view_df.sort_values(by=["_due_date_sort", "priority"], ascending=[True, True]).drop(columns=["_due_date_sort"])
+        elif sort_by == "Subassembly":
+            view_df = view_df.sort_values(by=["subassembly", "priority"], ascending=[True, True])
+        else:
+            view_df = view_df.sort_values(by=["status", "priority"], ascending=[True, True])
 
     tabs = st.tabs(["▦ Board View", "▦ Bulk Table Editor", "❖ Team Directory"])
     
@@ -1889,8 +1941,9 @@ elif current_page == "▦ Planner":
             "status": st.column_config.SelectboxColumn("Status", options=["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"], help="Current progress state."),
             "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"], help="Board column for visual organization."),
             "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
-            "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"], help="Which mission this belongs to."),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS), help="Which subteam is responsible."),
+            "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "Both"], help="Which mission this belongs to."),
+            "mars_division": st.column_config.SelectboxColumn("Mars Division", options=["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology"], help="Mars role assignment."),
+            "luna_division": st.column_config.SelectboxColumn("Luna Division", options=["Vehicle Design & Structures + Robotic Arm", "Software & Hardware", "Power and Electrical Systems"], help="Luna role assignment."),
             "assigned_to": st.column_config.TextColumn("Assigned To", help="Comma-separated assignees for this task."),
             "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
             "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
@@ -1919,10 +1972,12 @@ elif current_page == "▦ Planner":
             "updated_at": None,
             "member_name": st.column_config.TextColumn("Member Name", help="First and Last name"),
             "email": st.column_config.TextColumn("Email Address", help="Used for future notifications"),
-            "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS)),
-            "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"]),
+            "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "Both"]),
+            "mars_division": st.column_config.SelectboxColumn("Mars Division", options=["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology"]),
+            "luna_division": st.column_config.SelectboxColumn("Luna Division", options=["Vehicle Design & Structures + Robotic Arm", "Software & Hardware", "Power and Electrical Systems"]),
             "role": st.column_config.TextColumn("Role", help="E.g., Structural Lead"),
             "active": st.column_config.CheckboxColumn("Active Team Member"),
+            "notes": st.column_config.TextColumn("Notes", help="Optional member notes."),
         }
         
         edited_mem = st.data_editor(display_mem, num_rows="dynamic", use_container_width=True, height=500, column_config=mem_config)
