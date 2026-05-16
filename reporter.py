@@ -648,7 +648,7 @@ def get_planned_gantt_tasks(sh, mission, cycle) -> list[str]:
     if mission_key == "Mars":
         title = f"planned_schedule_Mars_{cycle_key}"
     elif mission_key == "Luna":
-        title = f"planned_schedule_luna_{cycle_key}"
+        title = f"planned_schedule_Luna_{cycle_key}"
     else:
         st.warning(f"No planned Gantt tasks loaded: mission '{mission_key}' is not supported.")
         return []
