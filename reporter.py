@@ -650,23 +650,53 @@ def get_planned_gantt_tasks(sh, mission, cycle) -> list[str]:
     elif mission_key == "Luna":
         title = f"planned_schedule_luna_{cycle_key}"
     else:
+        st.warning(f"No planned Gantt tasks loaded: mission '{mission_key}' is not supported.")
         return []
 
     try:
         ws = sh.worksheet(title)
-    except Exception:
+    except Exception as exc:
+        st.warning(f"No planned Gantt tasks found: worksheet '{title}' was not found.")
         return []
 
     try:
-        records = ws.get_all_records()
-        df = pd.DataFrame(records)
-        if df.empty or "task" not in df.columns:
-            return []
-        tasks = df["task"].astype(str).str.strip()
-        tasks = tasks[tasks != ""]
-        return sorted(tasks.unique().tolist())
-    except Exception:
+        rows = ws.get_all_values()
+    except Exception as exc:
+        st.warning(f"No planned Gantt tasks loaded: failed to read worksheet '{title}' ({exc}).")
         return []
+
+    if not rows or len(rows) < 1:
+        st.warning(f"No planned Gantt tasks found: worksheet '{title}' is empty.")
+        return []
+
+    headers = [str(h).strip() for h in rows[0]]
+    task_col = None
+    for idx, header in enumerate(headers):
+        if header.strip().lower() == "task":
+            task_col = idx
+            break
+
+    if task_col is None:
+        st.warning(f"No planned Gantt tasks loaded: worksheet '{title}' has no task column.")
+        return []
+
+    tasks = []
+    seen = set()
+    for row in rows[1:]:
+        if not isinstance(row, (list, tuple)):
+            continue
+        if task_col >= len(row):
+            continue
+        value = str(row[task_col]).strip()
+        if value and value not in seen:
+            seen.add(value)
+            tasks.append(value)
+
+    if not tasks:
+        st.warning(f"No planned Gantt tasks found for {mission_key} {cycle_key} in worksheet '{title}'. Check the planned schedule sheet and task column.")
+        return []
+
+    return tasks
 
 
 def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, client=None):
@@ -1156,6 +1186,8 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
         subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0, help="Select the URC subassembly for this division.")
         planned_gantt_task_options = [""] + get_planned_gantt_tasks(sh, mission, cycle)
         linked_gantt_task = st.selectbox("Linked Gantt Task", planned_gantt_task_options, help="Select the Gantt schedule task this Planner task connects to.")
+        if len(planned_gantt_task_options) <= 1:
+            st.warning(f"No planned Gantt tasks found for {mission} {cycle}. Check the planned schedule sheet and task column.")
         linked_gantt_phase = st.selectbox("Gantt Phase", [""] + GANTT_PHASE_OPTIONS, index=0, help="Select the actual Gantt phase for this task.")
         gantt_dependency_type = st.selectbox("Gantt Dependency", ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this task relates to the linked Gantt item.")
 
@@ -1247,6 +1279,8 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             index=planned_gantt_task_options.index(current_linked_task) if current_linked_task in planned_gantt_task_options else 0,
             help="Select the Gantt schedule task this Planner task connects to."
         )
+        if len(planned_gantt_task_options) <= 1:
+            st.warning(f"No planned Gantt tasks found for {task.get('mission', '')} {task.get('cycle', '')}. Check the planned schedule sheet and task column.")
         linked_gantt_phase = st.selectbox("Gantt Phase", [""] + GANTT_PHASE_OPTIONS, index=( [""] + GANTT_PHASE_OPTIONS).index(str(task.get("linked_gantt_phase", ""))) if str(task.get("linked_gantt_phase", "")) in GANTT_PHASE_OPTIONS else 0, help="Select the actual Gantt phase for this task.")
         gantt_dependency_type = st.selectbox("Gantt Dependency", ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], index=( ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"]).index(str(task.get("gantt_dependency_type", "None"))) if str(task.get("gantt_dependency_type", "None")) in ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"] else 0, help="How this task relates to the linked Gantt item.")
         
@@ -1517,7 +1551,7 @@ with st.sidebar:
         st.info("⌕ Filters for the weekly report are located on the main page.")
         
     elif current_page == "▦ Planner":
-        plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
+        plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=0)
         plan_assignee = st.selectbox("Assignee Filter", ["All"] + member_opts, help="Filter the board for a specific team member.")
         st.divider()
         
@@ -2410,8 +2444,10 @@ elif current_page == "▦ Planner":
             get_subassemblies("Luna", "Power and Electrical Systems")
         ))
         planned_gantt_task_options = get_planned_gantt_tasks(client, selected_mission, plan_cycle)
-        existing_linked_tasks = sorted({str(v).strip() for v in display_df["linked_gantt_task"].dropna().unique().tolist() if str(v).strip()})
-        linked_gantt_task_options = [""] + sorted(set(planned_gantt_task_options + existing_linked_tasks))
+        if not planned_gantt_task_options:
+            st.warning(f"No planned Gantt tasks found for {selected_mission} {plan_cycle}. Check the planned schedule sheet and task column.")
+        existing_linked_tasks = [str(v).strip() for v in display_df["linked_gantt_task"].dropna().unique().tolist() if str(v).strip()]
+        linked_gantt_task_options = [""] + [t for t in planned_gantt_task_options if t] + [t for t in existing_linked_tasks if t and t not in planned_gantt_task_options]
         config = {
             "task_id": None,
             "created_at": None,
