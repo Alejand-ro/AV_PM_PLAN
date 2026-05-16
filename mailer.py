@@ -39,21 +39,38 @@ def send_email(to_email, cc_emails, subject, message_body):
         return False, "Gmail Address or App Password secret is missing."
         
     msg = MIMEMultipart()
-    msg['From'] = GMAIL_ADDRESS
+    msg['From'] = f"Project AV Operations <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
+    # Clean, lightweight, professional HTML that bypasses spam filters
     html_content = f"""
     <html>
-      <body style="background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px;">
-        <div style="max-width: 600px; margin: 0 auto; background-color: #1e293b; padding: 30px; border-radius: 12px; border: 1px solid #334155;">
-          <h2 style="color: #6366f1; margin-top: 0;">⌖ Project AV Command</h2>
-          <p style="font-size: 16px; line-height: 1.6;">{message_body}</p>
-          <hr style="border-color: #334155; margin: 30px 0;">
-          <p style="font-size: 12px; color: #94a3b8;">This is an automated notification from the Project AV Operations system. Do not reply directly to this email.</p>
+      <body style="font-family: Arial, Helvetica, sans-serif; color: #222222; line-height: 1.6; max-width: 600px;">
+        <p style="font-size: 14px;">Hello,</p>
+        
+        <p style="font-size: 14px;">
+          This is a friendly automated reminder regarding an upcoming task deadline for <strong>Project AV</strong>:
+        </p>
+        
+        <div style="margin: 20px 0; padding: 12px 15px; border-left: 4px solid #0056b3; background-color: #f8f9fa;">
+          <span style="font-size: 14px;">{message_body}</span>
         </div>
+        
+        <p style="font-size: 14px;">
+          Please review the details and update your progress at your earliest convenience. Let your lead know if you are facing any blockers.
+        </p>
+        
+        <br>
+        <p style="font-size: 13px; color: #555555; margin-bottom: 0;">
+          Best regards,<br>
+          <strong>Project AV Operations Team</strong>
+        </p>
+        <p style="font-size: 11px; color: #999999; margin-top: 5px;">
+          ⌖ Automated PM Command System
+        </p>
       </body>
     </html>
     """
@@ -138,7 +155,7 @@ def process_queue():
                             "recipient": task.get("assigned_to", ""),
                             "cc_people": task.get("cc_people", ""),
                             "subject": f"⚠ TASK {time_label}: {task.get('title', 'Unknown')}",
-                            "message": f"<strong>Task:</strong> {task.get('title', 'Unknown')}<br><strong>Due:</strong> {due_date_str}<br><strong>Priority:</strong> {task.get('priority', 'None')}<br><br>Please update your progress in the PM Command app.",
+                            "message": f"<strong>Task:</strong> {task.get('title', 'Unknown')}<br><strong>Due:</strong> {due_date_str}<br><strong>Priority:</strong> {task.get('priority', 'None')}",
                             "status": "Queued",
                             "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "sent_at": "",
