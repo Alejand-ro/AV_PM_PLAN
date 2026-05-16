@@ -39,37 +39,30 @@ def send_email(to_email, cc_emails, subject, message_body):
         return False, "Gmail Address or App Password secret is missing."
         
     msg = MIMEMultipart()
-    msg['From'] = f"Project AV Operations <{GMAIL_ADDRESS}>"
+    # Looks like a human team name
+    msg['From'] = f"Project AV <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # Clean, lightweight, professional HTML that bypasses spam filters
+    # Bare-minimum HTML that mimics a human typing in Gmail or Outlook
     html_content = f"""
     <html>
-      <body style="font-family: Arial, Helvetica, sans-serif; color: #222222; line-height: 1.6; max-width: 600px;">
-        <p style="font-size: 14px;">Hello,</p>
+      <body style="font-family: Arial, Helvetica, sans-serif; color: #222222; font-size: 14px; line-height: 1.5; max-width: 600px;">
+        <p>Hi,</p>
         
-        <p style="font-size: 14px;">
-          This is a friendly automated reminder regarding an upcoming task deadline for <strong>Project AV</strong>:
-        </p>
+        <p>Just sending a quick heads-up about an upcoming task for Project AV.</p>
         
-        <div style="margin: 20px 0; padding: 12px 15px; border-left: 4px solid #0056b3; background-color: #f8f9fa;">
-          <span style="font-size: 14px;">{message_body}</span>
+        <div style="margin: 15px 0; padding: 10px 15px; border-left: 3px solid #2563eb; background-color: #fcfcfc;">
+          {message_body}
         </div>
         
-        <p style="font-size: 14px;">
-          Please review the details and update your progress at your earliest convenience. Let your lead know if you are facing any blockers.
-        </p>
+        <p>Please let the team lead know if you run into any blockers, and update your status on the board when you get a chance.</p>
         
-        <br>
-        <p style="font-size: 13px; color: #555555; margin-bottom: 0;">
-          Best regards,<br>
-          <strong>Project AV Operations Team</strong>
-        </p>
-        <p style="font-size: 11px; color: #999999; margin-top: 5px;">
-          ⌖ Automated PM Command System
+        <p>
+          Best,<br>
+          <span style="color: #2563eb; font-weight: bold;">Project AV</span>
         </p>
       </body>
     </html>
@@ -131,31 +124,34 @@ def process_queue():
                 
                 time_label = None
                 if days_left == 7: time_label = "in 1 week"
-                elif days_left == 1: time_label = "TOMORROW"
-                elif days_left == 0: time_label = "TODAY"
-                elif days_left < 0: time_label = f"LATE ({abs(days_left)} days)"
+                elif days_left == 1: time_label = "tomorrow"
+                elif days_left == 0: time_label = "today"
+                elif days_left < 0: time_label = f"late ({abs(days_left)} days)"
                 
                 if time_label:
                     task_id = task.get("task_id", "")
                     already_queued = False
                     if not df_notif.empty:
+                        # Checking against the new human-readable subject line
                         mask = (
                             (df_notif["task_id"] == task_id) & 
-                            (df_notif["subject"].str.contains(time_label, regex=False, na=False)) &
+                            (df_notif["subject"].str.lower().str.contains(time_label, regex=False, na=False)) &
                             (df_notif["created_at"].str.startswith(today_str, na=False))
                         )
                         if mask.any(): already_queued = True
                     
                     if not already_queued:
                         print(f"Auto-queuing {time_label} reminder for task: {task.get('title', 'Unknown')}")
+                        
+                        # Creating a non-spammy subject line and colorful but standard message body
                         new_row = {
                             "notification_id": str(uuid.uuid4()),
                             "task_id": task_id,
-                            "notification_type": "Automated Deadline",
+                            "notification_type": "Deadline Reminder",
                             "recipient": task.get("assigned_to", ""),
                             "cc_people": task.get("cc_people", ""),
-                            "subject": f"⚠ TASK {time_label}: {task.get('title', 'Unknown')}",
-                            "message": f"<strong>Task:</strong> {task.get('title', 'Unknown')}<br><strong>Due:</strong> {due_date_str}<br><strong>Priority:</strong> {task.get('priority', 'None')}",
+                            "subject": f"Project AV Task Reminder: {task.get('title', 'Unknown')} ({time_label})",
+                            "message": f"<span style='color: #666666;'>Task:</span> <b style='color: #000000;'>{task.get('title', 'Unknown')}</b><br><span style='color: #666666;'>Due:</span> <b style='color: #b30000;'>{due_date_str}</b><br><span style='color: #666666;'>Priority:</span> <b style='color: #000000;'>{task.get('priority', 'None')}</b>",
                             "status": "Queued",
                             "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "sent_at": "",
@@ -215,7 +211,6 @@ def process_queue():
     
     ws_notif.clear()
     
-    # Bulletproof gspread writing (handles both v5 and v6 of the library)
     try:
         ws_notif.update(data_to_write, "A1") 
     except TypeError:
