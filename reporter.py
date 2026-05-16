@@ -1020,6 +1020,10 @@ def update_actual_schedule_from_planner_tasks(sh, edited_tasks, all_tasks):
 
         actual_df = actual_df.copy()
         actual_df["task"] = actual_df["task"].astype(str)
+        for col in ACTUAL_SCHEDULE_COLUMNS:
+            if col not in actual_df.columns:
+                actual_df[col] = ""
+            actual_df[col] = actual_df[col].astype(object)
 
         updated_rows = []
         for linked_task_name, grouped in linked_tasks.groupby("linked_gantt_task"):
@@ -1100,9 +1104,11 @@ def update_actual_schedule_from_planner_tasks(sh, edited_tasks, all_tasks):
                 "last_updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             }
             if row_mask.any():
-                actual_df.loc[row_mask, ACTUAL_SCHEDULE_COLUMNS] = pd.DataFrame([updated_row])
+                target_idx = actual_df.index[row_mask][0]
+                for col in ACTUAL_SCHEDULE_COLUMNS:
+                    actual_df.at[target_idx, col] = str(updated_row.get(col, ""))
             else:
-                actual_df = pd.concat([actual_df, pd.DataFrame([updated_row])], ignore_index=True)
+                actual_df = pd.concat([actual_df, pd.DataFrame([{col: str(updated_row.get(col, "")) for col in ACTUAL_SCHEDULE_COLUMNS}])], ignore_index=True)
 
         save_actual_schedule_sheet(sh, mission, cycle, actual_df)
 
