@@ -38,7 +38,6 @@ def send_email(to_email, cc_emails, subject, message_body):
     if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
         return False, "Gmail Address or App Password secret is missing."
         
-    # RESTORED: Using your exact original Multipart logic
     msg = MIMEMultipart()
     msg['From'] = f"Project AV Command <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
@@ -46,7 +45,7 @@ def send_email(to_email, cc_emails, subject, message_body):
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # RESTORED: Building the HTML wrapper directly inside the send function
+    # --- HTML WRAPPER (Includes Logo Placeholder) ---
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -58,22 +57,25 @@ def send_email(to_email, cc_emails, subject, message_body):
       <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #020617; padding: 40px 20px;">
         <tr>
           <td align="center">
-            <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; background-color: #0f172a; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #1e293b;">
+            <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; background-color: #0f172a; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.8); border: 1px solid #1e293b;">
               
               <tr>
-                <td style="background: linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%); padding: 25px; text-align: center;">
-                  <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: 2px; text-transform: uppercase;">Project AV Command</h1>
+                <td style="background-color: #1e293b; border-bottom: 3px solid #3b82f6; padding: 30px; text-align: center;">
+                  
+                  <img src="YOUR_LOGO_URL_HERE" alt="Project AV Logo" style="max-height: 50px; margin-bottom: 15px; display: block; margin-left: auto; margin-right: auto; color: #ffffff;">
+                  
+                  <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: 3px; text-transform: uppercase;">Project AV Command</h1>
                 </td>
               </tr>
               
               <tr>
-                <td style="padding: 35px 30px;">
+                <td style="padding: 40px 30px;">
                   {message_body}
                   
-                  <table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 25px;">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 35px;">
                     <tr>
                       <td align="center" style="padding: 20px 0;">
-                        <a href="https://project-av-pm-weekly.streamlit.app" style="background-color: #3b82f6; color: #ffffff; padding: 14px 30px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block; text-transform: uppercase; letter-spacing: 1px;">Access Dashboard</a>
+                        <a href="https://project-av-pm-weekly.streamlit.app" style="background-color: #3b82f6; color: #ffffff; padding: 16px 35px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block; text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.3);">Access PM Dashboard</a>
                       </td>
                     </tr>
                   </table>
@@ -81,10 +83,10 @@ def send_email(to_email, cc_emails, subject, message_body):
               </tr>
               
               <tr>
-                <td style="background-color: #0b1120; padding: 20px; text-align: center; border-top: 1px solid #1e293b;">
-                  <p style="color: #64748b; font-size: 12px; margin: 0; line-height: 1.5;">
-                    ⚠️ <strong>AUTOMATED MESSAGE - DO NOT REPLY</strong> ⚠️<br>
-                    This is a system-generated notification from the Project AV PM Database. Replies to this email address are not monitored.
+                <td style="background-color: #0b1120; padding: 25px; text-align: center; border-top: 1px solid #1e293b;">
+                  <p style="color: #475569; font-size: 12px; margin: 0; line-height: 1.6; text-transform: uppercase; letter-spacing: 1px;">
+                    ⚠️ Automated System Message ⚠️<br>
+                    Project AV Operations Database • Do not reply
                   </p>
                 </td>
               </tr>
@@ -97,7 +99,6 @@ def send_email(to_email, cc_emails, subject, message_body):
     </html>
     """
 
-    # RESTORED: Your exact original attach method
     msg.attach(MIMEText(html_content, 'html'))
 
     all_recipients = [to_email]
@@ -177,34 +178,49 @@ def process_queue():
                         task_title = task.get('title', 'Unknown')
                         priority = task.get('priority', 'None')
                         
-                        # Determine colors for the inner HTML body
-                        prio_color = "#3b82f6" 
-                        if "high" in priority.lower() or "critical" in priority.lower(): prio_color = "#ef4444" 
-                        elif "medium" in priority.lower(): prio_color = "#f59e0b" 
+                        # Determine colors for the UI elements
+                        prio_color = "#3b82f6" # Default blue
+                        if "high" in priority.lower() or "critical" in priority.lower(): 
+                            prio_color = "#ef4444" # Red
+                        elif "medium" in priority.lower(): 
+                            prio_color = "#f59e0b" # Orange
                             
-                        date_color = "#ef4444" if "late" in time_label.lower() else "#10b981"
+                        date_color = "#ef4444" if "late" in time_label.lower() else "#34d399" # Red if late, Green otherwise
+                        date_bg = "rgba(239, 68, 68, 0.1)" if "late" in time_label.lower() else "rgba(52, 211, 153, 0.1)"
 
-                        # This inner HTML gets passed as `message_body` to the wrapper
+                        # --- NEW SPACED OUT INNER HTML DESIGN ---
                         inner_html = f"""
-                        <p style="color: #94a3b8; font-size: 16px; margin-top: 0;">Incoming Task Notification,</p>
-                        <p style="color: #e2e8f0; font-size: 16px; line-height: 1.6;">You have an action item requiring your attention. Please review the task details below.</p>
+                        <p style="color: #94a3b8; font-size: 16px; margin-top: 0; text-transform: uppercase; letter-spacing: 1px;">Hello Team,</p>
+                        <p style="color: #e2e8f0; font-size: 16px; line-height: 1.6; margin-bottom: 30px;">An action item requires your attention. Please review the highlighted task details below.</p>
                         
-                        <div style="background-color: #1e293b; border-left: 5px solid {prio_color}; padding: 20px; margin: 30px 0; border-radius: 4px;">
-                          <h2 style="color: #f8fafc; margin: 0 0 15px 0; font-size: 20px;">{task_title}</h2>
-                          <table width="100%" cellpadding="0" cellspacing="0">
-                            <tr>
-                              <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Status:</td>
-                              <td style="color: #f8fafc; padding-bottom: 8px;">Due {time_label}</td>
-                            </tr>
-                            <tr>
-                              <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Timeline:</td>
-                              <td style="color: {date_color}; padding-bottom: 8px; font-weight: bold;">{due_date_str}</td>
-                            </tr>
-                            <tr>
-                              <td width="30%" style="color: #94a3b8; font-weight: bold;">Priority:</td>
-                              <td style="color: {prio_color}; font-weight: bold;">{priority}</td>
-                            </tr>
-                          </table>
+                        <div style="background-color: #020617; border: 1px solid #1e293b; border-left: 5px solid {prio_color}; border-radius: 8px; overflow: hidden; margin: 30px 0;">
+                          
+                          <div style="background-color: #1e293b; padding: 20px 25px; border-bottom: 1px solid #0f172a;">
+                            <p style="margin: 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">📌 Target Objective</p>
+                            <h2 style="color: #38bdf8; margin: 0; font-size: 22px; font-weight: bold;">{task_title}</h2>
+                          </div>
+                          
+                          <div style="padding: 25px;">
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                              <tr>
+                                <td width="50%" style="padding-right: 10px;">
+                                  <div style="background-color: {date_bg}; border: 1px solid {date_color}; border-radius: 6px; padding: 15px; text-align: center;">
+                                    <p style="margin: 0; color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">⏱️ Timeline</p>
+                                    <p style="margin: 0; color: {date_color}; font-size: 20px; font-weight: bold;">{due_date_str}</p>
+                                    <p style="margin: 5px 0 0 0; color: #f8fafc; font-size: 13px;">(Due {time_label.upper()})</p>
+                                  </div>
+                                </td>
+                                
+                                <td width="50%" style="padding-left: 10px;">
+                                  <div style="background-color: rgba(255, 255, 255, 0.03); border: 1px solid #334155; border-radius: 6px; padding: 15px; text-align: center; height: 100%;">
+                                    <p style="margin: 0; color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">🚨 Priority</p>
+                                    <p style="margin: 0; color: {prio_color}; font-size: 20px; font-weight: bold; text-transform: uppercase;">{priority}</p>
+                                    <p style="margin: 5px 0 0 0; color: transparent; font-size: 13px;">.</p> </div>
+                                </td>
+                              </tr>
+                            </table>
+                          </div>
+                          
                         </div>
                         """
                         
