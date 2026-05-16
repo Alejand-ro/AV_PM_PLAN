@@ -793,17 +793,50 @@ def get_actual_schedule_tab_name(mission: str, cycle: str) -> str:
     if str(mission or "").strip() == "Mars":
         prefix = "actual_schedule_Mars"
     elif str(mission or "").strip() == "Luna":
-        prefix = "actual_schedule_luna"
+        prefix = "actual_schedule_Luna"
     else:
         prefix = f"actual_schedule_{str(mission or '').strip()}"
     return f"{prefix}_{str(cycle or '').strip()}"
 
 
+def resolve_actual_schedule_worksheet(sh, mission: str, cycle: str):
+    """Find or create the actual schedule worksheet, handling case-insensitivity and legacy sheets."""
+    expected_name = get_actual_schedule_tab_name(mission, cycle)
+    
+    try:
+        return sh.worksheet(expected_name)
+    except Exception:
+        pass
+    
+    existing_sheets = [ws.title for ws in sh.worksheets()]
+    expected_lower = expected_name.lower()
+    for sheet_name in existing_sheets:
+        if sheet_name.lower() == expected_lower:
+            try:
+                return sh.worksheet(sheet_name)
+            except Exception:
+                pass
+    
+    try:
+        return ensure_worksheet_safe(sh, expected_name, ACTUAL_SCHEDULE_COLUMNS)
+    except Exception as exc:
+        st.warning(f"Could not resolve or create actual schedule worksheet '{expected_name}': {exc}")
+        raise
+
+
 def load_actual_schedule_sheet(sh, mission: str, cycle: str) -> tuple[any, pd.DataFrame]:
-    title = get_actual_schedule_tab_name(mission, cycle)
-    ws = ensure_worksheet_safe(sh, title, ACTUAL_SCHEDULE_COLUMNS)
-    records = ws.get_all_records(expected_headers=ACTUAL_SCHEDULE_COLUMNS)
-    df = pd.DataFrame(records)
+    try:
+        ws = resolve_actual_schedule_worksheet(sh, mission, cycle)
+    except Exception:
+        df = pd.DataFrame(columns=ACTUAL_SCHEDULE_COLUMNS)
+        return None, df
+    
+    try:
+        records = ws.get_all_records(expected_headers=ACTUAL_SCHEDULE_COLUMNS)
+        df = pd.DataFrame(records)
+    except Exception:
+        df = pd.DataFrame(columns=ACTUAL_SCHEDULE_COLUMNS)
+    
     if df.empty:
         df = pd.DataFrame(columns=ACTUAL_SCHEDULE_COLUMNS)
     else:
@@ -814,7 +847,12 @@ def load_actual_schedule_sheet(sh, mission: str, cycle: str) -> tuple[any, pd.Da
 
 
 def save_actual_schedule_sheet(sh, mission: str, cycle: str, df: pd.DataFrame):
-    ws = ensure_worksheet_safe(sh, get_actual_schedule_tab_name(mission, cycle), ACTUAL_SCHEDULE_COLUMNS)
+    try:
+        ws = resolve_actual_schedule_worksheet(sh, mission, cycle)
+    except Exception as exc:
+        st.error(f"Could not save actual schedule: {exc}")
+        return
+    
     df = df.copy()
     for col in ACTUAL_SCHEDULE_COLUMNS:
         if col not in df.columns:
@@ -828,6 +866,7 @@ def save_actual_schedule_sheet(sh, mission: str, cycle: str, df: pd.DataFrame):
             break
         except gspread.exceptions.APIError:
             if attempt == 2:
+                st.error("Google Sheets API busy. Actual schedule save failed.")
                 raise
             time.sleep(2.5)
 
