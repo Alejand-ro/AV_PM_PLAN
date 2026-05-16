@@ -129,11 +129,12 @@ PLANNER_NOTIFICATIONS_COLS = ["notification_id", "task_id", "notification_type",
 GANTT_TASK_LINKS_COLS = ["link_id", "mission", "cycle", "planner_task_id", "planner_task_title", "linked_gantt_task", "linked_gantt_phase", "blocks_gantt_start", "blocks_gantt_completion", "delay_flag", "delay_days", "status", "created_at", "updated_at"]
 
 SUBASSEMBLIES = {
-    "Vehicle Design & Structures": ["Rover Chassis", "Suspension", "Drive Train", "Astrobio Payload CAD", "Physical Design Phase", "System Integration"],
-    "Robotic Arm": ["Robotic Arm Mechanics", "End Effector", "Arm Electronics", "Arm Firmware / Inverse Kinematics"],
-    "Software & Hardware": ["Front-end GUI", "Base Station Software", "Base Station Hardware", "Autonomous Navigation", "Computer Vision / CV"],
-    "Power and Electrical Systems": ["BMS (Battery Management)", "Telemetry", "Motor Controllers", "Power Distribution Board", "Wiring Harness"],
-    "Astrobiology": ["Life Detection Assays", "Chemical Analysis", "Geology / Spectrometry", "Habitability Assessment"]
+    "Vehicle Design & Structures": ["Chassis", "Drive Train", "Astrobiology Payload Housing", "Mounting Systems (Antenna/Shelves/Plates)", "Suspension"],
+    "Robotic Arm": ["End Effector", "Arm Joints", "Arm Links", "Arm Base", "Arm Electronics Enclosure"],
+    "Vehicle Design & Structures + Robotic Arm": ["Chassis & Drive Train", "Arm Base & Links", "End Effector & Joints", "Mounting Systems"],
+    "Software & Hardware": ["Base Station GUI", "Autonomous Navigation System", "Computer Vision System", "Rover Compute / Onboard Hardware", "Telemetry / Comms System"],
+    "Power and Electrical Systems": ["Battery Box / BMS", "Power Distribution Board (PDB)", "Motor Controllers", "Wiring Harness"],
+    "Astrobiology": ["Soil Collection Mechanism", "Chemical Assays / Reagents", "Spectrometer / Sensors"]
 }
 
 SUBASSEMBLY_GANTT_PHASES = {
@@ -1064,7 +1065,6 @@ with st.sidebar:
     st.divider()
     st.header("⌕ Context Filters")
     st.caption("These filters control what you see and create.")
-    st.session_state.planner_mission = st.selectbox("Mission", ["Mars", "Luna"], index=["Mars", "Luna"].index(st.session_state.planner_mission))
     current_mission = st.session_state.planner_mission
     st.divider()
     
@@ -1073,9 +1073,7 @@ with st.sidebar:
         st.info("⌕ Filters for the weekly report are located on the main page.")
         
     elif current_page == "▦ Planner":
-        plan_mission = current_mission
         plan_cycle = st.selectbox("Cycle Filter", DYNAMIC_CYCLES, index=1)
-        plan_division = st.selectbox("Division Filter", get_mission_divisions(plan_mission, df_memb), index=0)
         plan_assignee = st.selectbox("Assignee Filter", ["All"] + member_opts, help="Filter the board for a specific team member.")
         st.divider()
         
@@ -1774,16 +1772,27 @@ elif current_page == "▦ Planner":
     df_links = fetch_cached_df("gantt_task_links", GANTT_TASK_LINKS_COLS, False)
     df_notif = fetch_cached_df("planner_notifications_queue", PLANNER_NOTIFICATIONS_COLS, False)
     
-    selected_board_div = st.selectbox("Select Division to View Planner", ["-- Select Division --"] + list(DIVISIONS))
-    if selected_board_div == "-- Select Division --":
-        st.info("Please select a division to load the planner.")
+    selected_mission = st.selectbox("Select Mission", ["-- Select Mission --", "Mars", "Luna"])
+    if selected_mission == "-- Select Mission --":
+        st.info("Please select a mission to begin.")
+        st.stop()
+
+    available_divisions = []
+    if selected_mission == "Mars":
+        available_divisions = ["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology"]
+    elif selected_mission == "Luna":
+        available_divisions = ["Vehicle Design & Structures + Robotic Arm", "Software & Hardware", "Power and Electrical Systems"]
+
+    selected_division = st.selectbox("Select Division", ["-- Select Division --"] + available_divisions)
+    if selected_division == "-- Select Division --":
+        st.info("Please select a division to begin.")
         st.stop()
 
     view_df = df_tasks.copy()
     if not view_df.empty:
-        view_df = view_df[view_df["mission"] == plan_mission]
+        view_df = view_df[view_df["mission"] == selected_mission]
         view_df = view_df[view_df["cycle"] == plan_cycle]
-        view_df = view_df[view_df["division"] == selected_board_div]
+        view_df = view_df[view_df["division"] == selected_division]
         if plan_assignee != "All":
             view_df = view_df[view_df["assigned_to"].fillna("").apply(lambda x: plan_assignee in normalize_assignees(x))]
 
@@ -1830,8 +1839,7 @@ elif current_page == "▦ Planner":
         c_action, _ = st.columns([1, 4])
         with c_action:
             if st.button("+ Create Task", type="primary", use_container_width=True):
-                create_task_dialog(plan_mission, plan_cycle, plan_division, member_opts, df_tasks, client, df_memb)
-
+                        create_task_dialog(selected_mission, plan_cycle, selected_division, member_opts, df_tasks, client, df_memb)
         st.markdown("<br>", unsafe_allow_html=True)
         
         # Save Board Updates button
