@@ -651,9 +651,12 @@ def update_gantt_links(sh, edited_tasks, df_links):
                 time.sleep(2.5)
 
 def queue_notification(sh, task_row, df_notif, df_memb=None, custom_subject: str | None = None, custom_msg: str | None = None):
-    recipient = task_row.get("assigned_to", "")
-    email, role = get_member_contact(recipient, df_memb) if df_memb is not None else ("", "")
-    recipient_label = email or recipient
+    assignees = normalize_assignees(task_row.get("assigned_to", ""))
+    if not assignees:
+        assignees = [""]
+
+    recipient_labels = []
+    final_role = ""
     subject = custom_subject or f"Task Update: {task_row.get('title', 'Task')}"
     if custom_msg:
         message = custom_msg
@@ -664,19 +667,38 @@ def queue_notification(sh, task_row, df_notif, df_memb=None, custom_subject: str
     else:
         message = f"Task '{task_row.get('title', 'Task')}' has been assigned to you."
 
-    new_notif = pd.DataFrame([{
-        "notification_id": str(uuid.uuid4()),
-        "task_id": task_row.get("task_id", ""),
-        "notification_type": "Task Notification",
-        "recipient": recipient_label,
-        "cc_people": task_row.get("cc_people", ""),
-        "subject": subject,
-        "message": message,
-        "status": "Queued",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }])
+    rows = []
+    for recipient in assignees:
+        email, role = get_member_contact(recipient, df_memb) if df_memb is not None else ("", "")
+        recipient_label = email or recipient
+        if recipient_label:
+            recipient_labels.append(recipient_label)
+        if role:
+            final_role = role
+
+        rows.append({
+            "notification_id": str(uuid.uuid4()),
+            "task_id": task_row.get("task_id", ""),
+            "notification_type": "Task Notification",
+            "recipient": recipient_label,
+            "cc_people": task_row.get("cc_people", ""),
+            "subject": subject,
+            "message": message,
+            "status": "Queued",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    new_notif = pd.DataFrame(rows)
     save_planner_data(sh, new_notif, df_notif, PLANNER_NOTIFICATIONS_COLS, "planner_notifications_queue", "notification_id")
-    return recipient_label, role
+    return ", ".join(recipient_labels), final_role
+
+
+def normalize_assignees(assigned_to):
+    if isinstance(assigned_to, list):
+        return [name.strip() for name in assigned_to if str(name).strip()]
+    if pd.isna(assigned_to):
+        return []
+    return [name.strip() for name in str(assigned_to).split(",") if name.strip()]
 
 # --- POPUP CREATORS (DIALOGS) ---
 
@@ -689,14 +711,19 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
         subassembly = st.text_input("Subassembly")
         
         c1, c2 = st.columns(2)
-        assignee = c1.selectbox("Assign To", ["Unassigned"] + members, help="Start typing a name to search the directory.")
+        selected_assignees = c1.multiselect("Assign To", members, default=[], help="Start typing names to search the directory.")
         
-        if assignee != "Unassigned" and not df_memb.empty:
-            mem_row = df_memb[df_memb['member_name'] == assignee]
-            if not mem_row.empty:
-                em = mem_row.iloc[0].get('email', 'No email')
-                ro = mem_row.iloc[0].get('role', 'No role')
-                c1.caption(f"✉ {em} | ⚙ {ro}")
+        if selected_assignees and not df_memb.empty:
+            captions = []
+            for name in selected_assignees:
+                mem_row = df_memb[df_memb['member_name'] == name]
+                if not mem_row.empty:
+                    em = mem_row.iloc[0].get('email', 'No email')
+                    ro = mem_row.iloc[0].get('role', 'No role')
+                    captions.append(f"{name} ({em}, {ro})")
+                else:
+                    captions.append(name)
+            c1.caption("; ".join(captions))
                 
         bucket = c2.selectbox("Bucket", ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"])
         
@@ -718,7 +745,7 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
                     "title": title,
                     "description": desc,
                     "subassembly": subassembly,
-                    "assigned_to": assignee if assignee != "Unassigned" else "",
+                    "assigned_to": ", ".join(selected_assignees),
                     "priority": priority,
                     "status": "Not Started" if bucket != "Completed" else "Completed",
                     "due_date": due_date.strftime("%Y-%m-%d") if due_date else "",
@@ -740,9 +767,8 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
         return
 
     task = task_rows.iloc[0].to_dict()
-    assignee = task.get("assigned_to", "Unassigned")
-    email, role = get_member_contact(assignee, df_memb)
-    assignee_options = ["Unassigned"] + (df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else [])
+    current_assignees = normalize_assignees(task.get("assigned_to", ""))
+    assignee_options = sorted(set((df_memb["member_name"].dropna().unique().tolist() if not df_memb.empty else []) + current_assignees))
     status_options = ["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"]
     priority_options = ["Low", "Medium", "High", "Critical"]
     bucket_options = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
@@ -754,7 +780,7 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
         subassembly = st.text_input("Subassembly", value=str(task.get("subassembly", "")))
         
         c1, c2 = st.columns(2)
-        selected_assignee = c1.selectbox("Assigned To", assignee_options, index=assignee_options.index(assignee) if assignee in assignee_options else 0)
+        selected_assignee = c1.multiselect("Assigned To", assignee_options, default=current_assignees)
         selected_status = c2.selectbox("Status", status_options, index=status_options.index(str(task.get("status", "Not Started"))) if str(task.get("status", "Not Started")) in status_options else 0)
         
         c3, c4 = st.columns(2)
@@ -773,7 +799,7 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             updated_task["title"] = title
             updated_task["description"] = description
             updated_task["subassembly"] = subassembly
-            updated_task["assigned_to"] = selected_assignee if selected_assignee != "Unassigned" else ""
+            updated_task["assigned_to"] = ", ".join(selected_assignee)
             updated_task["status"] = selected_status
             updated_task["priority"] = selected_priority
             updated_task["bucket"] = selected_bucket
@@ -1274,11 +1300,13 @@ if current_page == "▦ Weekly Performance Report":
                 filtered = filtered[week_mask]
                 
                 if not filtered.empty:
-                    members = filtered["assigned_to"].dropna().unique()
+                    members = set()
+                    for assigned in filtered["assigned_to"].dropna().unique():
+                        members.update(normalize_assignees(assigned))
                     new_rows = []
                     for m in members:
                         if not m: continue
-                        m_tasks = filtered[filtered["assigned_to"] == m]
+                        m_tasks = filtered[filtered["assigned_to"].fillna("").apply(lambda x: m in normalize_assignees(x))]
                         completed_tasks = m_tasks[m_tasks["status"] == "Completed"]
                         
                         late_tasks, on_time_tasks = 0, 0
@@ -1720,7 +1748,7 @@ elif current_page == "▦ Planner":
         view_df = view_df[view_df["cycle"] == plan_cycle]
         view_df = view_df[view_df["division"] == plan_division]
         if plan_assignee != "All":
-            view_df = view_df[view_df["assigned_to"] == plan_assignee]
+            view_df = view_df[view_df["assigned_to"].fillna("").apply(lambda x: plan_assignee in normalize_assignees(x))]
 
     # Initialize pending batch changes state
     if "pending_board_changes" not in st.session_state:
@@ -1863,7 +1891,7 @@ elif current_page == "▦ Planner":
             "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "General"], help="Which mission this belongs to."),
             "division": st.column_config.SelectboxColumn("Division", options=list(DIVISIONS), help="Which subteam is responsible."),
-            "assigned_to": st.column_config.SelectboxColumn("Assigned To", options=member_opts if member_opts else [""], help="Team member assigned to complete the work."),
+            "assigned_to": st.column_config.TextColumn("Assigned To", help="Comma-separated assignees for this task."),
             "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
             "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
             "completed_date": st.column_config.DateColumn("Completed Date", format="YYYY-MM-DD", help="When it was actually finished."),
