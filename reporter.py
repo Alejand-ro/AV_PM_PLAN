@@ -126,26 +126,35 @@ PLANNER_CHECKLIST_COLS = ["checklist_item_id", "task_id", "item_text", "complete
 PLANNER_COMMENTS_COLS = ["comment_id", "task_id", "author", "comment", "created_at"]
 PLANNER_MEMBERS_COLS = ["member_id", "member_name", "email", "mission", "mars_division", "luna_division", "role", "active", "notes", "created_at", "updated_at"]
 PLANNER_NOTIFICATIONS_COLS = ["notification_id", "task_id", "notification_type", "recipient", "cc_people", "subject", "message", "status", "created_at", "sent_at", "error"]
-GANTT_TASK_LINKS_COLS = ["link_id", "mission", "cycle", "planner_task_id", "planner_task_title", "linked_gantt_task", "linked_gantt_phase", "blocks_gantt_start", "blocks_gantt_completion", "delay_flag", "delay_days", "status", "created_at", "updated_at"]
-
-SUBASSEMBLIES = {
-    "Vehicle Design & Structures": ["Chassis", "Drive Train", "Astrobiology Payload Housing", "Mounting Systems (Antenna/Shelves/Plates)", "Suspension"],
-    "Robotic Arm": ["End Effector", "Arm Joints", "Arm Links", "Arm Base", "Arm Electronics Enclosure"],
-    "Vehicle Design & Structures + Robotic Arm": ["Chassis & Drive Train", "Arm Base & Links", "End Effector & Joints", "Mounting Systems"],
-    "Software & Hardware": ["Base Station GUI", "Autonomous Navigation System", "Computer Vision System", "Rover Compute / Onboard Hardware", "Telemetry / Comms System"],
-    "Power and Electrical Systems": ["Battery Box / BMS", "Power Distribution Board (PDB)", "Motor Controllers", "Wiring Harness"],
-    "Astrobiology": ["Soil Collection Mechanism", "Chemical Assays / Reagents", "Spectrometer / Sensors"]
-}
-
-SUBASSEMBLY_GANTT_PHASES = {
-    "Physical Design Phase": "Physical Design Phase"
-}
+GANTT_TASK_LINKS_COLS = ["link_id", "mission", "cycle", "planner_task_id", "planner_task_title", "linked_gantt_task", "linked_gantt_phase", "blocks_gantt_start", "blocks_gantt_completion", "delay_flag", "delay_days", "status", "planned_gantt_start", "planned_gantt_end", "actual_start_date", "actual_end_date", "gantt_auto_status", "start_delay_days", "completion_delay_days", "created_at", "updated_at"]
 
 PLATFORM_COLORS = {"No post day": "#ef4444", "Outreach Activity": "#f97316", "LinkedIn": "#eab308", "Email": "#22c55e", "X": "#2dd4bf", "TikTok": "#38bdf8", "Facebook": "#c084fc", "YouTube": "#f43f5e", "Instagram": "#d946ef", "Other": "#94a3b8"}
 STATUS_SYMBOLS = {"Planned": "◌", "In Progress": "◐", "Posted": "●", "Missed": "⚠", "Cancelled": "×", "Rescheduled": "↷"}
 
 DYNAMIC_CYCLES = ["2026-2027", "2027-2028", "2028-2029"]
 MONTHS_LIST = list(calendar.month_name)[1:]
+
+GANTT_PHASE_OPTIONS = [
+    "Foundation",
+    "Concept Development",
+    "Planning",
+    "Development",
+    "Testing",
+    "Integration",
+    "Deliverables",
+    "Final Readiness",
+]
+
+ACTUAL_SCHEDULE_COLUMNS = [
+    "task",
+    "actual_start_date",
+    "actual_end_date",
+    "percent_complete",
+    "status",
+    "owner",
+    "notes",
+    "last_updated",
+]
 
 def google_sheet_ready() -> tuple[bool, str]:
     missing = []
@@ -285,6 +294,76 @@ def get_mission_divisions(mission: str, df_memb: pd.DataFrame) -> list[str]:
     if candidates:
         return candidates
     return list(DIVISIONS)
+
+
+def get_subassemblies(mission: str, division: str) -> list[str]:
+    mission = str(mission or "").strip()
+    division = str(division or "").strip()
+    mars_subassemblies = {
+        "Vehicle Design & Structures": [
+            "Chassis",
+            "Drive Train",
+            "Astrobiology Payload Housing",
+            "Mounting Systems (Antenna/Shelves/Plates)",
+        ],
+        "Robotic Arm": [
+            "End Effector",
+            "Arm Joints",
+            "Arm Links",
+            "Arm Base",
+            "Arm Electronics Enclosure",
+            "Arm Motion Controls / General Movement Programming",
+        ],
+        "Software & Hardware": [
+            "Base Station GUI",
+            "Autonomous Navigation System",
+            "Computer Vision System",
+            "Rover Compute / Onboard Hardware",
+            "Telemetry / Comms System",
+            "Autonomous Arm / Arm Compute",
+            "Astrobiology Spectrometry Software & Data Interface",
+        ],
+        "Power and Electrical Systems": [
+            "Battery Box",
+            "BMS & Protection",
+            "Power Distribution Board (PDB)",
+            "PCB, Layout & Harnesses",
+            "Motor Controllers",
+            "Telemetry",
+        ],
+        "Astrobiology": [
+            "Spectrometry",
+            "Habitability",
+            "Biochemistry",
+        ],
+    }
+    luna_subassemblies = {
+        "Vehicle Design & Robotic Structures": [
+            "Chassis & Drive Train",
+            "Operational Attachment",
+            "Mounting Systems",
+        ],
+        "Software & Hardware": [
+            "Base Station GUI",
+            "Autonomous Navigation System",
+            "Computer Vision System",
+            "Rover Compute / Onboard Hardware",
+            "Telemetry / Comms System",
+        ],
+        "Power and Electrical Systems": [
+            "Battery Box",
+            "BMS & Protection",
+            "Power Distribution Board (PDB)",
+            "PCB, Layout & Harnesses",
+            "Motor Controllers",
+            "Telemetry",
+        ],
+    }
+    if mission == "Mars":
+        return mars_subassemblies.get(division, [])
+    if mission == "Luna":
+        return luna_subassemblies.get(division, [])
+    return []
 
 
 def get_member_contact(member_name: str, df_memb: pd.DataFrame) -> tuple[str, str]:
@@ -579,6 +658,9 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
             dd = pd.to_datetime(row.get("due_date"), errors="coerce")
             cd = pd.to_datetime(row.get("completed_date"), errors="coerce")
             status = row.get("status", "")
+            if status == "Completed" and str(row.get("completed_date", "")).strip() == "":
+                edited_df.at[idx, "completed_date"] = today.strftime("%Y-%m-%d")
+                cd = today
             
             delay_flag = False
             delay_days = 0
@@ -593,9 +675,6 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
             edited_df.at[idx, "delay_flag"] = delay_flag
             edited_df.at[idx, "delay_days"] = delay_days
 
-            subassembly_key = str(row.get("subassembly", "")).strip()
-            if subassembly_key in SUBASSEMBLY_GANTT_PHASES:
-                edited_df.at[idx, "linked_gantt_phase"] = SUBASSEMBLY_GANTT_PHASES[subassembly_key]
     
     for c in cols:
         if c not in edited_df.columns:
@@ -631,24 +710,317 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
     
     st.cache_data.clear() # Reset cache
 
+
+def normalize_bool_value(value) -> bool:
+    return str(value).strip().lower() in ["true", "1", "yes", "y", "on", "t"]
+
+
+def get_actual_schedule_tab_name(mission: str, cycle: str) -> str:
+    if str(mission or "").strip() == "Mars":
+        prefix = "actual_schedule_Mars"
+    elif str(mission or "").strip() == "Luna":
+        prefix = "actual_schedule_luna"
+    else:
+        prefix = f"actual_schedule_{str(mission or '').strip()}"
+    return f"{prefix}_{str(cycle or '').strip()}"
+
+
+def load_actual_schedule_sheet(sh, mission: str, cycle: str) -> tuple[any, pd.DataFrame]:
+    title = get_actual_schedule_tab_name(mission, cycle)
+    ws = ensure_worksheet_safe(sh, title, ACTUAL_SCHEDULE_COLUMNS)
+    records = ws.get_all_records(expected_headers=ACTUAL_SCHEDULE_COLUMNS)
+    df = pd.DataFrame(records)
+    if df.empty:
+        df = pd.DataFrame(columns=ACTUAL_SCHEDULE_COLUMNS)
+    else:
+        for col in ACTUAL_SCHEDULE_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+    return ws, df
+
+
+def save_actual_schedule_sheet(sh, mission: str, cycle: str, df: pd.DataFrame):
+    ws = ensure_worksheet_safe(sh, get_actual_schedule_tab_name(mission, cycle), ACTUAL_SCHEDULE_COLUMNS)
+    df = df.copy()
+    for col in ACTUAL_SCHEDULE_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[ACTUAL_SCHEDULE_COLUMNS].fillna("").astype(str)
+    data = [ACTUAL_SCHEDULE_COLUMNS] + df[ACTUAL_SCHEDULE_COLUMNS].values.tolist()
+    for attempt in range(3):
+        try:
+            ws.clear()
+            ws.append_rows(data, value_input_option="USER_ENTERED")
+            break
+        except gspread.exceptions.APIError:
+            if attempt == 2:
+                raise
+            time.sleep(2.5)
+
+
+def compute_task_delay(task_row) -> dict:
+    due_date = pd.to_datetime(task_row.get("due_date"), errors="coerce")
+    completed_date = pd.to_datetime(task_row.get("completed_date"), errors="coerce")
+    status = str(task_row.get("status", "")).strip()
+    if pd.isna(due_date):
+        return {"delay_flag": False, "delay_days": 0}
+
+    if status not in ["Completed", "Cancelled"] and pd.Timestamp(date.today()) > due_date:
+        return {"delay_flag": True, "delay_days": int((pd.Timestamp(date.today()) - due_date).days)}
+
+    if status == "Completed" and pd.notnull(completed_date) and completed_date > due_date:
+        return {"delay_flag": True, "delay_days": int((completed_date - due_date).days)}
+
+    return {"delay_flag": False, "delay_days": 0}
+
+
+def compute_gantt_link_status(task_row) -> dict:
+    delay_info = compute_task_delay(task_row)
+    status = str(task_row.get("status", "")).strip()
+    if status == "Cancelled":
+        gantt_auto_status = "Cancelled"
+    elif delay_info["delay_flag"]:
+        gantt_auto_status = "Delayed"
+    elif status == "Completed":
+        gantt_auto_status = "Completed"
+    elif status in ["In Progress", "In Review", "Blocked"]:
+        gantt_auto_status = "Started"
+    else:
+        gantt_auto_status = "Not Started"
+
+    start_date = pd.to_datetime(task_row.get("start_date"), errors="coerce")
+    completed_date = pd.to_datetime(task_row.get("completed_date"), errors="coerce")
+    suggested_start = ""
+    suggested_end = ""
+    if status in ["In Progress", "Blocked", "In Review", "Completed"]:
+        if pd.notnull(start_date):
+            suggested_start = start_date.strftime("%Y-%m-%d")
+        else:
+            suggested_start = date.today().strftime("%Y-%m-%d")
+    if status == "Completed":
+        if pd.notnull(completed_date):
+            suggested_end = completed_date.strftime("%Y-%m-%d")
+        else:
+            suggested_end = date.today().strftime("%Y-%m-%d")
+
+    dep_type = str(task_row.get("gantt_dependency_type", "")).strip()
+    blocks_start = normalize_bool_value(task_row.get("blocks_gantt_start", False))
+    blocks_completion = normalize_bool_value(task_row.get("blocks_gantt_completion", False))
+    start_delay_days = 0
+    completion_delay_days = 0
+
+    if dep_type == "Starts Gantt Task" or blocks_start:
+        compare_date = pd.to_datetime(task_row.get("start_date"), errors="coerce")
+        if pd.isna(compare_date):
+            compare_date = pd.to_datetime(task_row.get("due_date"), errors="coerce")
+        if pd.notnull(compare_date) and status == "Not Started" and pd.Timestamp(date.today()) > compare_date:
+            start_delay_days = int((pd.Timestamp(date.today()) - compare_date).days)
+
+    if dep_type == "Completes Gantt Task" or blocks_completion:
+        compare_date = pd.to_datetime(task_row.get("due_date"), errors="coerce")
+        completed_date = pd.to_datetime(task_row.get("completed_date"), errors="coerce")
+        if pd.notnull(compare_date):
+            if status not in ["Completed", "Cancelled"] and pd.Timestamp(date.today()) > compare_date:
+                completion_delay_days = int((pd.Timestamp(date.today()) - compare_date).days)
+            elif status == "Completed" and pd.notnull(completed_date) and completed_date > compare_date:
+                completion_delay_days = int((completed_date - compare_date).days)
+
+    return {
+        "delay_flag": delay_info["delay_flag"],
+        "delay_days": delay_info["delay_days"],
+        "gantt_auto_status": gantt_auto_status,
+        "actual_start_date": suggested_start,
+        "actual_end_date": suggested_end,
+        "start_delay_days": start_delay_days,
+        "completion_delay_days": completion_delay_days,
+    }
+
+
+def get_planner_task_progress(task_row) -> float:
+    if pd.notnull(task_row.get("percent_complete")) and str(task_row.get("percent_complete", "")).strip() != "":
+        try:
+            return float(task_row.get("percent_complete"))
+        except Exception:
+            pass
+    fallback = {
+        "Completed": 100.0,
+        "In Review": 80.0,
+        "In Progress": 50.0,
+        "Blocked": 35.0,
+        "Not Started": 0.0,
+    }
+    return fallback.get(str(task_row.get("status", "Not Started")).strip(), 0.0)
+
+
+def calculate_actual_schedule_status(tasks_df: pd.DataFrame) -> str:
+    if tasks_df.empty:
+        return "Not Started"
+    statuses = [str(s).strip() for s in tasks_df["status"].fillna("")]
+    cancelled_tasks = [s for s in statuses if s == "Cancelled"]
+    non_cancelled = [s for s in statuses if s != "Cancelled"]
+    if non_cancelled and all(s == "Completed" for s in non_cancelled):
+        return "Complete"
+    if non_cancelled and any(s == "Blocked" for s in non_cancelled):
+        return "At Risk"
+    if any(str(v).strip().lower() == "true" for v in tasks_df.get("delay_flag", [])):
+        return "Delayed"
+    if non_cancelled and any(s in ["In Progress", "In Review"] for s in non_cancelled):
+        return "In Progress"
+    if non_cancelled and all(s == "Not Started" for s in non_cancelled):
+        return "Not Started"
+    if non_cancelled and len(non_cancelled) == 0:
+        return "Cancelled"
+    return "In Progress"
+
+
+def update_actual_schedule_from_planner_tasks(sh, edited_tasks, all_tasks):
+    if edited_tasks is None or edited_tasks.empty:
+        return
+    if all_tasks is None or all_tasks.empty:
+        return
+
+    edited_tasks = edited_tasks.copy()
+    all_tasks = all_tasks.copy()
+    for col in ["mission", "cycle", "linked_gantt_task"]:
+        if col not in edited_tasks.columns:
+            edited_tasks[col] = ""
+        if col not in all_tasks.columns:
+            all_tasks[col] = ""
+
+    for mission, cycle in edited_tasks[["mission", "cycle"]].drop_duplicates().itertuples(index=False, name=None):
+        mission = str(mission or "").strip()
+        cycle = str(cycle or "").strip()
+        if not mission or not cycle:
+            continue
+
+        linked_tasks = all_tasks[
+            (all_tasks["mission"] == mission) &
+            (all_tasks["cycle"] == cycle) &
+            all_tasks["linked_gantt_task"].astype(str).str.strip().astype(bool)
+        ].copy()
+        if linked_tasks.empty:
+            continue
+
+        ws, actual_df = load_actual_schedule_sheet(sh, mission, cycle)
+        if actual_df.empty:
+            actual_df = pd.DataFrame(columns=ACTUAL_SCHEDULE_COLUMNS)
+
+        actual_df = actual_df.copy()
+        actual_df["task"] = actual_df["task"].astype(str)
+
+        updated_rows = []
+        for linked_task_name, grouped in linked_tasks.groupby("linked_gantt_task"):
+            if not str(linked_task_name).strip():
+                continue
+            row_mask = actual_df["task"] == linked_task_name
+            existing = actual_df[row_mask].iloc[0].to_dict() if row_mask.any() else {col: "" for col in ACTUAL_SCHEDULE_COLUMNS}
+
+            existing_percent = 0.0
+            if str(existing.get("percent_complete", "")).strip() != "":
+                try:
+                    existing_percent = float(existing.get("percent_complete", 0))
+                except Exception:
+                    existing_percent = 0.0
+
+            calculated_progress = grouped.apply(get_planner_task_progress, axis=1).mean() if not grouped.empty else 0.0
+            if pd.isna(calculated_progress):
+                calculated_progress = 0.0
+            percent_complete = max(existing_percent, float(calculated_progress or 0.0))
+
+            auto_status = calculate_actual_schedule_status(grouped)
+            if existing.get("status", "") in ["Complete", "Cancelled"]:
+                status_value = existing.get("status", "")
+            else:
+                status_value = auto_status
+
+            owner_value = existing.get("owner", "")
+            notes_value = str(existing.get("notes", "")).strip()
+            if not notes_value:
+                notes_value = f"Auto update from Planner on {date.today():%Y-%m-%d}: Linked tasks updated."
+            elif f"Auto update from Planner on {date.today():%Y-%m-%d}:" not in notes_value:
+                notes_value = notes_value + f"\nAuto update from Planner on {date.today():%Y-%m-%d}: Linked tasks updated."
+
+            start_date_value = existing.get("actual_start_date", "")
+            end_date_value = existing.get("actual_end_date", "")
+
+            if not str(start_date_value).strip():
+                active_statuses = ["In Progress", "Blocked", "In Review", "Completed"]
+                active_tasks = grouped[grouped["status"].astype(str).str.strip().isin(active_statuses)]
+                if not active_tasks.empty:
+                    start_dates = pd.to_datetime(active_tasks["start_date"], errors="coerce")
+                    start_dates = start_dates[start_dates.notna()]
+                    if not start_dates.empty:
+                        start_date_value = start_dates.min().strftime("%Y-%m-%d")
+                    else:
+                        start_date_value = date.today().strftime("%Y-%m-%d")
+
+            if not str(end_date_value).strip():
+                completed_tasks = grouped[grouped["status"].astype(str).str.strip() == "Completed"].copy()
+                non_cancelled = grouped[grouped["status"].astype(str).str.strip() != "Cancelled"]
+                if not completed_tasks.empty:
+                    completed_tasks["completed_date_dt"] = pd.to_datetime(completed_tasks["completed_date"], errors="coerce")
+                    all_non_cancelled_completed = not non_cancelled.empty and all(
+                        str(s).strip() == "Completed" for s in non_cancelled["status"]
+                    )
+                    if all_non_cancelled_completed:
+                        valid_dates = completed_tasks["completed_date_dt"].dropna()
+                        if not valid_dates.empty:
+                            end_date_value = valid_dates.max().strftime("%Y-%m-%d")
+                    else:
+                        completion_trigger_tasks = completed_tasks[
+                            (completed_tasks["gantt_dependency_type"].astype(str).str.strip() == "Completes Gantt Task") |
+                            (completed_tasks["blocks_gantt_completion"].apply(normalize_bool_value))
+                        ]
+                        if not completion_trigger_tasks.empty:
+                            valid_dates = pd.to_datetime(completion_trigger_tasks["completed_date"], errors="coerce").dropna()
+                            if not valid_dates.empty:
+                                end_date_value = valid_dates.max().strftime("%Y-%m-%d")
+
+            updated_row = {
+                "task": linked_task_name,
+                "actual_start_date": start_date_value,
+                "actual_end_date": end_date_value,
+                "percent_complete": percent_complete,
+                "status": status_value,
+                "owner": owner_value,
+                "notes": notes_value,
+                "last_updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            if row_mask.any():
+                actual_df.loc[row_mask, ACTUAL_SCHEDULE_COLUMNS] = pd.DataFrame([updated_row])
+            else:
+                actual_df = pd.concat([actual_df, pd.DataFrame([updated_row])], ignore_index=True)
+
+        save_actual_schedule_sheet(sh, mission, cycle, actual_df)
+
+
 def update_gantt_links(sh, edited_tasks, df_links):
     links_to_save = []
     for _, task in edited_tasks.iterrows():
-        if task.get("linked_gantt_task"):
+        if task.get("linked_gantt_task") or task.get("linked_gantt_phase"):
+            link_status = compute_gantt_link_status(task)
             links_to_save.append({
                 "link_id": f"link_{task['task_id']}",
                 "mission": task.get("mission", ""),
                 "cycle": task.get("cycle", ""),
                 "planner_task_id": task["task_id"],
                 "planner_task_title": task.get("title", ""),
-                "linked_gantt_task": task["linked_gantt_task"],
+                "linked_gantt_task": task.get("linked_gantt_task", ""),
                 "linked_gantt_phase": task.get("linked_gantt_phase", ""),
-                "blocks_gantt_start": task.get("blocks_gantt_start", False),
-                "blocks_gantt_completion": task.get("blocks_gantt_completion", False),
-                "delay_flag": task.get("delay_flag", False),
-                "delay_days": task.get("delay_days", 0),
+                "blocks_gantt_start": normalize_bool_value(task.get("blocks_gantt_start", False)),
+                "blocks_gantt_completion": normalize_bool_value(task.get("blocks_gantt_completion", False)),
+                "planned_gantt_start": task.get("planned_gantt_start", ""),
+                "planned_gantt_end": task.get("planned_gantt_end", ""),
+                "actual_start_date": link_status.get("actual_start_date", ""),
+                "actual_end_date": link_status.get("actual_end_date", ""),
+                "gantt_auto_status": link_status.get("gantt_auto_status", ""),
+                "start_delay_days": link_status.get("start_delay_days", 0),
+                "completion_delay_days": link_status.get("completion_delay_days", 0),
+                "delay_flag": link_status.get("delay_flag", False),
+                "delay_days": link_status.get("delay_days", 0),
                 "status": task.get("status", ""),
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "created_at": task.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
             
     if links_to_save:
@@ -736,9 +1108,14 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
     with st.form("new_task_form"):
         title = st.text_input("Task Title *")
         desc = st.text_area("Description")
-        subassembly_options = SUBASSEMBLIES.get(division, [])
+        subassembly_options = get_subassemblies(mission, division)
         subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0, help="Select the URC subassembly for this division.")
-        
+        linked_gantt_task = st.text_input("Linked Gantt Task", help="Exact name of the Gantt schedule task this Planner task connects to.")
+        linked_gantt_phase = st.selectbox("Gantt Phase", [""] + GANTT_PHASE_OPTIONS, index=0, help="Select the actual Gantt phase for this task.")
+        gantt_dependency_type = st.selectbox("Gantt Dependency", ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this task relates to the linked Gantt item.")
+        blocks_gantt_start = st.checkbox("Blocks Gantt Start", value=False)
+        blocks_gantt_completion = st.checkbox("Blocks Gantt Completion", value=False)
+
         c1, c2 = st.columns(2)
         selected_assignees = c1.multiselect("Assign To", members, default=[], help="Start typing names to search the directory.")
         
@@ -774,6 +1151,11 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
                     "title": title,
                     "description": desc,
                     "subassembly": subassembly,
+                    "linked_gantt_task": linked_gantt_task,
+                    "linked_gantt_phase": linked_gantt_phase,
+                    "gantt_dependency_type": gantt_dependency_type,
+                    "blocks_gantt_start": blocks_gantt_start,
+                    "blocks_gantt_completion": blocks_gantt_completion,
                     "assigned_to": ", ".join(selected_assignees),
                     "priority": priority,
                     "status": "Not Started" if bucket != "Completed" else "Completed",
@@ -782,6 +1164,9 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
                     "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }])
                 save_planner_data(sh, new_task, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+                update_gantt_links(sh, new_task, df_links)
+                merged_all = pd.concat([df_tasks, new_task], ignore_index=True) if not df_tasks.empty else new_task.copy()
+                update_actual_schedule_from_planner_tasks(sh, new_task, merged_all)
                 if new_task.at[0, "assigned_to"]:
                     recipient, role = queue_notification(sh, new_task.iloc[0].to_dict(), fetch_cached_df("planner_notifications_queue", PLANNER_NOTIFICATIONS_COLS, False), df_memb, custom_subject=f"New Task Assigned: {new_task.at[0, 'title']}", custom_msg=f"You have been assigned a new task: {new_task.at[0, 'title']}. Due {new_task.at[0, 'due_date']}. Please review and update status as needed.")
                     if recipient:
@@ -801,7 +1186,7 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
     status_options = ["Not Started", "In Progress", "Blocked", "In Review", "Completed", "Cancelled"]
     priority_options = ["Low", "Medium", "High", "Critical"]
     bucket_options = ["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"]
-    subassembly_options = SUBASSEMBLIES.get(task.get("division", ""), [])
+    subassembly_options = get_subassemblies(task.get("mission", ""), task.get("division", ""))
     current_subassembly = str(task.get("subassembly", ""))
     if current_subassembly and current_subassembly not in subassembly_options:
         subassembly_options = [current_subassembly] + subassembly_options
@@ -811,6 +1196,11 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
         title = st.text_input("Task Title", value=str(task.get("title", "")))
         description = st.text_area("Description", value=str(task.get("description", "")))
         subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0 if not current_subassembly else ([""] + subassembly_options).index(current_subassembly) if current_subassembly in subassembly_options else 0)
+        linked_gantt_task = st.text_input("Linked Gantt Task", value=str(task.get("linked_gantt_task", "")), help="Exact name of the Gantt schedule task this Planner task connects to.")
+        linked_gantt_phase = st.selectbox("Gantt Phase", [""] + GANTT_PHASE_OPTIONS, index=( [""] + GANTT_PHASE_OPTIONS).index(str(task.get("linked_gantt_phase", ""))) if str(task.get("linked_gantt_phase", "")) in GANTT_PHASE_OPTIONS else 0, help="Select the actual Gantt phase for this task.")
+        gantt_dependency_type = st.selectbox("Gantt Dependency", ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], index=( ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"]).index(str(task.get("gantt_dependency_type", "None"))) if str(task.get("gantt_dependency_type", "None")) in ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"] else 0, help="How this task relates to the linked Gantt item.")
+        blocks_gantt_start = st.checkbox("Blocks Gantt Start", value=normalize_bool_value(task.get("blocks_gantt_start", False)))
+        blocks_gantt_completion = st.checkbox("Blocks Gantt Completion", value=normalize_bool_value(task.get("blocks_gantt_completion", False)))
         
         c1, c2 = st.columns(2)
         selected_assignee = c1.multiselect("Assigned To", assignee_options, default=current_assignees)
@@ -832,6 +1222,11 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             updated_task["title"] = title
             updated_task["description"] = description
             updated_task["subassembly"] = subassembly
+            updated_task["linked_gantt_task"] = linked_gantt_task
+            updated_task["linked_gantt_phase"] = linked_gantt_phase
+            updated_task["gantt_dependency_type"] = gantt_dependency_type
+            updated_task["blocks_gantt_start"] = blocks_gantt_start
+            updated_task["blocks_gantt_completion"] = blocks_gantt_completion
             updated_task["assigned_to"] = ", ".join(selected_assignee)
             updated_task["status"] = selected_status
             updated_task["priority"] = selected_priority
@@ -842,6 +1237,9 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             updated_task["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             save_planner_data(sh, pd.DataFrame([updated_task]), df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+            update_gantt_links(sh, pd.DataFrame([updated_task]), df_links)
+            merged_all = pd.concat([df_tasks[~df_tasks["task_id"].isin([updated_task["task_id"]])], pd.DataFrame([updated_task])], ignore_index=True) if not df_tasks.empty else pd.DataFrame([updated_task])
+            update_actual_schedule_from_planner_tasks(sh, pd.DataFrame([updated_task]), merged_all)
             if selected_status in ["Completed", "Blocked"] and updated_task.get("assigned_to", ""):
                 queue_notification(sh, updated_task, df_notif, df_memb)
             st.success("Task updated successfully.")
@@ -1277,6 +1675,9 @@ if current_page == "▦ Weekly Performance Report":
         """, unsafe_allow_html=True
     )
 
+    competition = "Mars" if st.session_state.get("comp_radio", "Mars Mission").startswith("Mars") else "Luna"
+    st.session_state.competition = competition
+
     active_divisions = DIVISIONS if competition != "Luna" else [d for d in DIVISIONS if any(k in d.lower() for k in ["electrical", "vehicle", "software"])]
 
     legend_html = "".join(f'<span class="division-pill"><span class="dot" style="background:{color}"></span>{division_name}</span>' for division_name, color in DIVISION_COLORS.items() if division_name in active_divisions)
@@ -1285,6 +1686,9 @@ if current_page == "▦ Weekly Performance Report":
     st.markdown('<div class="glass" style="padding: 20px 28px;">', unsafe_allow_html=True)
     st.markdown("<h4 style='margin-top: 0; margin-bottom: 12px; color: #f8fafc; font-size: 18px;'>◈ Target Competition Program</h4>", unsafe_allow_html=True)
     st.radio("Competition Program", options=["Mars Mission", "Luna Mission"], key="comp_radio", horizontal=True, label_visibility="collapsed")
+    competition = "Mars" if st.session_state.get("comp_radio", "Mars Mission").startswith("Mars") else "Luna"
+    st.session_state.competition = competition
+    active_divisions = DIVISIONS if competition != "Luna" else [d for d in DIVISIONS if any(k in d.lower() for k in ["electrical", "vehicle", "software"])]
     st.markdown('</div>', unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
@@ -1319,8 +1723,13 @@ if current_page == "▦ Weekly Performance Report":
         st.markdown("Pull assigned tasks from the Planner and automatically build member performance rows for this week.")
         if st.button("Load Weekly Rows from Planner", type="primary"):
             df_tasks = fetch_cached_df("planner_tasks", PLANNER_TASKS_COLS, False)
+            selected_competition = "Mars" if st.session_state.get("comp_radio", "Mars Mission").startswith("Mars") else "Luna"
             if not df_tasks.empty:
-                mask = (df_tasks["division"] == division) & (df_tasks["status"] != "Cancelled")
+                mask = (
+                    (df_tasks["mission"] == selected_competition) &
+                    (df_tasks["division"] == division) &
+                    (df_tasks["status"] != "Cancelled")
+                )
                 filtered = df_tasks[mask].copy()
                 ws_date = pd.to_datetime(week_start)
                 we_date = ws_date + timedelta(days=6)
@@ -1781,7 +2190,7 @@ elif current_page == "▦ Planner":
     if selected_mission == "Mars":
         available_divisions = ["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology"]
     elif selected_mission == "Luna":
-        available_divisions = ["Vehicle Design & Structures + Robotic Arm", "Software & Hardware", "Power and Electrical Systems"]
+        available_divisions = ["Vehicle Design & Robotic Structures", "Software & Hardware", "Power and Electrical Systems"]
 
     selected_division = st.selectbox("Select Division", ["-- Select Division --"] + available_divisions)
     if selected_division == "-- Select Division --":
@@ -1873,7 +2282,12 @@ elif current_page == "▦ Planner":
                 
                 # One bulk save to Google Sheets
                 if tasks_to_update:
-                    save_planner_data(client, pd.DataFrame(tasks_to_update), df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+                    edited_df = pd.DataFrame(tasks_to_update)
+                    save_planner_data(client, edited_df, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
+                    update_gantt_links(client, edited_df, df_links)
+                    merged_all = df_tasks[~df_tasks["task_id"].isin(edited_df["task_id"])].copy() if not df_tasks.empty else pd.DataFrame(columns=PLANNER_TASKS_COLS)
+                    merged_all = pd.concat([merged_all, edited_df], ignore_index=True)
+                    update_actual_schedule_from_planner_tasks(client, edited_df, merged_all)
                     st.session_state.pending_board_changes = {}
                     st.success(f"✓ Saved {len(tasks_to_update)} task(s) to board.")
                     st.rerun()
@@ -1939,6 +2353,16 @@ elif current_page == "▦ Planner":
         display_df["due_date"] = pd.to_datetime(display_df["due_date"], errors="coerce").dt.date
         display_df["completed_date"] = pd.to_datetime(display_df["completed_date"], errors="coerce").dt.date
         
+        all_subassembly_options = sorted(set(
+            get_subassemblies("Mars", "Vehicle Design & Structures") +
+            get_subassemblies("Mars", "Robotic Arm") +
+            get_subassemblies("Mars", "Software & Hardware") +
+            get_subassemblies("Mars", "Power and Electrical Systems") +
+            get_subassemblies("Mars", "Astrobiology") +
+            get_subassemblies("Luna", "Vehicle Design & Robotic Structures") +
+            get_subassemblies("Luna", "Software & Hardware") +
+            get_subassemblies("Luna", "Power and Electrical Systems")
+        ))
         config = {
             "task_id": None,
             "created_at": None,
@@ -1950,13 +2374,15 @@ elif current_page == "▦ Planner":
             "bucket": st.column_config.SelectboxColumn("Bucket", options=["Backlog", "This Week", "In Progress", "Waiting / Blocked", "Review", "Completed"], help="Board column for visual organization."),
             "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High", "Critical"], help="Urgency level."),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "Both"], help="Which mission this belongs to."),
-            "mars_division": st.column_config.SelectboxColumn("Mars Division", options=["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology"], help="Mars role assignment."),
-            "luna_division": st.column_config.SelectboxColumn("Luna Division", options=["Vehicle Design & Structures + Robotic Arm", "Software & Hardware", "Power and Electrical Systems"], help="Luna role assignment."),
+            "division": st.column_config.SelectboxColumn("Division", options=["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology", "Vehicle Design & Robotic Structures"], help="Task division."),
+            "subassembly": st.column_config.SelectboxColumn("Subassembly", options=[""] + all_subassembly_options, help="Select the functional subassembly for this task."),
+            "linked_gantt_task": st.column_config.TextColumn("Linked Gantt Task", help="Exact name of the Gantt task this Planner task links to."),
+            "linked_gantt_phase": st.column_config.SelectboxColumn("Gantt Phase", options=GANTT_PHASE_OPTIONS, help="Select the Gantt phase for this task."),
+            "gantt_dependency_type": st.column_config.SelectboxColumn("Gantt Dep.", options=["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this links to the master Gantt schedule."),
             "assigned_to": st.column_config.TextColumn("Assigned To", help="Comma-separated assignees for this task."),
             "start_date": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD", help="When the work should begin."),
             "due_date": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", help="Deadline for the task."),
             "completed_date": st.column_config.DateColumn("Completed Date", format="YYYY-MM-DD", help="When it was actually finished."),
-            "gantt_dependency_type": st.column_config.SelectboxColumn("Gantt Dep.", options=["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this links to the master Gantt schedule.")
         }
         
         edited_view = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=600, column_config=config)
@@ -1964,6 +2390,9 @@ elif current_page == "▦ Planner":
         if st.button("☑ Save Tasks Bulk Editor", type="primary"):
             save_planner_data(client, edited_view, df_tasks, PLANNER_TASKS_COLS, "planner_tasks", "task_id")
             update_gantt_links(client, edited_view, df_links)
+            merged_all = df_tasks[~df_tasks["task_id"].isin(edited_view["task_id"])].copy() if not df_tasks.empty else pd.DataFrame(columns=PLANNER_TASKS_COLS)
+            merged_all = pd.concat([merged_all, edited_view], ignore_index=True)
+            update_actual_schedule_from_planner_tasks(client, edited_view, merged_all)
             st.rerun()
 
     with tabs[2]:
@@ -1982,7 +2411,7 @@ elif current_page == "▦ Planner":
             "email": st.column_config.TextColumn("Email Address", help="Used for future notifications"),
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "Both"]),
             "mars_division": st.column_config.SelectboxColumn("Mars Division", options=["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology"]),
-            "luna_division": st.column_config.SelectboxColumn("Luna Division", options=["Vehicle Design & Structures + Robotic Arm", "Software & Hardware", "Power and Electrical Systems"]),
+            "luna_division": st.column_config.SelectboxColumn("Luna Division", options=["Vehicle Design & Robotic Structures", "Software & Hardware", "Power and Electrical Systems"]),
             "role": st.column_config.TextColumn("Role", help="E.g., Structural Lead"),
             "active": st.column_config.CheckboxColumn("Active Team Member"),
             "notes": st.column_config.TextColumn("Notes", help="Optional member notes."),
