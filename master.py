@@ -791,10 +791,22 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
                     "end": row["end_date"],
                     "Type": "Planned Schedule",
                     "ColorType": "Planned Schedule",
+                    "schedule_status": None,
+                    "percent_complete": None,
+                    "actual_start_date": None,
+                    "actual_end_date": None,
+                    "owner": None,
+                    "notes": None,
                 })
 
             if pd.notna(row.get("actual_start_date")):
+                actual_start = row["actual_start_date"]
                 actual_end = row["actual_end_date"] if pd.notna(row["actual_end_date"]) else today
+                if pd.isna(row["actual_end_date"]) and pd.notna(actual_start):
+                    display_minimum_end = actual_start + pd.Timedelta(days=3)
+                    if actual_end < display_minimum_end:
+                        actual_end = display_minimum_end
+
                 actual_type = "Completed Actual" if pd.notna(row["actual_end_date"]) else "Ongoing Actual"
                 schedule_status = str(row.get("schedule_status", "")).strip()
                 color_type = actual_type
@@ -805,11 +817,16 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
 
                 plot_items.append({
                     "task": actual_label,
-                    "start": row["actual_start_date"],
+                    "start": actual_start,
                     "end": actual_end,
                     "Type": actual_type,
                     "ColorType": color_type,
                     "schedule_status": schedule_status,
+                    "percent_complete": row.get("percent_complete"),
+                    "actual_start_date": row.get("actual_start_date"),
+                    "actual_end_date": row.get("actual_end_date"),
+                    "owner": row.get("owner"),
+                    "notes": row.get("notes"),
                 })
 
         completed = int((merged_df["schedule_status"] == "Complete").sum()) if "schedule_status" in merged_df.columns else 0
@@ -842,13 +859,13 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
                 y="task",
                 color="ColorType",
                 color_discrete_map=color_map,
-                hover_data=["Type", "schedule_status"],
+                hover_data=["Type", "schedule_status", "percent_complete", "actual_start_date", "actual_end_date", "owner", "notes"],
                 category_orders={"task": y_order},
             )
             fig_overlay.update_layout(barmode="group")
-            fig_overlay.update_yaxes(autorange="reversed", title="")
+            fig_overlay.update_yaxes(categoryorder="array", categoryarray=list(reversed(y_order)), title="")
             fig_overlay.update_xaxes(title="Timeline Overlay")
-            fig_overlay.update_traces(marker_line_width=2, opacity=0.98)
+            fig_overlay.update_traces(marker_line_width=2, marker_line_color="#e2e8f0", opacity=1.0)
             today_dt = pd.Timestamp.today().normalize().to_pydatetime()
             fig_overlay.add_shape(
                 type="line",
@@ -869,7 +886,7 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
                 showarrow=False,
                 font=dict(color="#ffffff", size=12),
             )
-            fig_overlay.update_layout(height=max(520, len(y_order) * 26), bargap=0.12)
+            fig_overlay.update_layout(height=max(560, len(y_order) * 30), bargap=0.12)
             st.plotly_chart(plotly_theme(fig_overlay), use_container_width=True)
 
         merged_df["ongoing_slip_days"] = 0
