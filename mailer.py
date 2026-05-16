@@ -56,51 +56,69 @@ def render_email_wrapper(message_body):
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 
-<body style="margin:0; padding:0; background:#070b12; font-family:Segoe UI, Arial, sans-serif;">
+<body style="margin:0; padding:0; background:#05070d; font-family:Segoe UI, Arial, Helvetica, sans-serif;">
 
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#070b12; padding:34px 14px;">
+  <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+    style="background:#05070d; padding:34px 14px;">
     <tr>
       <td align="center">
 
-        <table width="100%" cellpadding="0" cellspacing="0"
-          style="max-width:680px; background:#172235; border:1px solid #314159; border-radius:28px; overflow:hidden; box-shadow:0 24px 70px rgba(0,0,0,.55);">
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+          style="max-width:720px; border-radius:30px; overflow:hidden; background:#101827; border:1px solid #2b3a55; box-shadow:0 28px 90px rgba(0,0,0,.65);">
 
           <tr>
-            <td style="padding:38px 34px 28px 34px; background:linear-gradient(145deg,#1b2940,#121b2b);">
+            <td style="padding:0; background:#111827;">
 
-              <p style="margin:0 0 18px 0; color:#60a5fa; font-size:13px; font-weight:800; letter-spacing:7px; text-transform:uppercase;">
-                PROJECT AV • MARS MISSION MODE
-              </p>
-
-              <table cellpadding="0" cellspacing="0">
+              <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+                style="background:linear-gradient(145deg,#172235 0%,#0b1220 55%,#020617 100%);">
                 <tr>
-                  <td style="font-size:58px; line-height:56px; font-weight:900; letter-spacing:-5px; padding-right:16px;">
-                    <span style="color:#ef4444; text-shadow:5px 5px 0 #991b1b;">A</span><span style="color:#3b82f6; text-shadow:5px 5px 0 #1e3a8a;">V</span>
-                  </td>
-                  <td>
-                    <h1 style="margin:0; color:#ffffff; font-size:34px; line-height:1.06; font-weight:900;">
-                      Mission<br>Task Update
-                    </h1>
+                  <td style="padding:40px 38px 30px 38px;">
+
+                    <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                      <tr>
+                        <td style="vertical-align:top;">
+
+                          <p style="margin:0 0 22px 0; color:#93c5fd; font-size:12px; font-weight:900; letter-spacing:7px; text-transform:uppercase;">
+                            PROJECT AV • OPERATIONS SYSTEM
+                          </p>
+
+                          <table cellpadding="0" cellspacing="0" role="presentation">
+                            <tr>
+                              <td style="font-family:Arial Black, Arial, Helvetica, sans-serif; font-size:76px; line-height:68px; font-weight:900; letter-spacing:-16px; font-style:italic; padding-right:22px; vertical-align:middle;">
+                                <span style="color:#ef4444; text-shadow:6px 6px 0 #7f1d1d, 10px 10px 22px rgba(239,68,68,.25);">A</span><span style="color:#3b82f6; text-shadow:6px 6px 0 #1e3a8a, 10px 10px 22px rgba(59,130,246,.25);">V</span>
+                              </td>
+                              <td style="vertical-align:middle;">
+                                <h1 style="margin:0; color:#ffffff; font-size:38px; line-height:1.03; font-weight:950; letter-spacing:-1.5px;">
+                                  Mission<br>Task Update
+                                </h1>
+                              </td>
+                            </tr>
+                          </table>
+
+                          <p style="margin:28px 0 0 0; color:#cbd5e1; font-size:16px; line-height:1.75;">
+                            Automated Project AV planner notice generated from the PM operations dashboard.
+                          </p>
+
+                        </td>
+                      </tr>
+                    </table>
+
                   </td>
                 </tr>
               </table>
-
-              <p style="margin:26px 0 0 0; color:#cbd5e1; font-size:17px; line-height:1.7;">
-                Automated Project AV operations notice generated from the PM planner system.
-              </p>
 
             </td>
           </tr>
 
           <tr>
-            <td style="padding:34px;">
+            <td style="padding:34px; background:linear-gradient(180deg,#0b1220 0%,#070b12 100%);">
               {message_body}
 
-              <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:34px;">
+              <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-top:34px;">
                 <tr>
                   <td align="center">
                     <a href="{APP_URL}"
-                      style="display:inline-block; background:#ef4444; color:#ffffff; text-decoration:none; padding:16px 30px; border-radius:16px; font-size:15px; font-weight:900; letter-spacing:.8px; text-transform:uppercase; box-shadow:0 12px 30px rgba(239,68,68,.35);">
+                      style="display:inline-block; background:#ef4444; color:#ffffff; text-decoration:none; padding:17px 34px; border-radius:16px; font-size:14px; font-weight:950; letter-spacing:1px; text-transform:uppercase; box-shadow:0 14px 34px rgba(239,68,68,.38); border:1px solid rgba(255,255,255,.14);">
                       Open PM Dashboard
                     </a>
                   </td>
@@ -110,8 +128,8 @@ def render_email_wrapper(message_body):
           </tr>
 
           <tr>
-            <td style="padding:22px 34px; background:#0f172a; border-top:1px solid #334155;">
-              <p style="margin:0; color:#64748b; text-align:center; font-size:12px; line-height:1.7; letter-spacing:1px; text-transform:uppercase;">
+            <td style="padding:24px 34px; background:#020617; border-top:1px solid #243044;">
+              <p style="margin:0; color:#64748b; text-align:center; font-size:11px; line-height:1.75; letter-spacing:1.3px; text-transform:uppercase;">
                 Automated System Message<br>
                 Project AV Operations Database • Please do not reply
               </p>
@@ -127,6 +145,320 @@ def render_email_wrapper(message_body):
 </body>
 </html>
 """
+
+
+def metadata_row(label, value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+
+    return f"""
+      <tr>
+        <td style="padding:9px 0; color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:1.5px; text-transform:uppercase; width:155px; vertical-align:top;">
+          {esc(label)}
+        </td>
+        <td style="padding:9px 0; color:#e2e8f0; font-size:14px; line-height:1.55; font-weight:650; vertical-align:top;">
+          {esc(value)}
+        </td>
+      </tr>
+    """
+
+
+def badge(label, color="#3b82f6"):
+    label = str(label or "").strip()
+    if not label:
+        return ""
+
+    return f"""
+      <span style="display:inline-block; margin:0 6px 8px 0; padding:8px 11px; border-radius:999px; background:{color}; color:#ffffff; font-size:11px; font-weight:900; letter-spacing:.8px; text-transform:uppercase; box-shadow:0 8px 18px rgba(0,0,0,.24);">
+        {esc(label)}
+      </span>
+    """
+
+
+def build_task_email(task, due_date_str, time_label):
+    task_title = esc(task.get("title", "Unknown"))
+    priority = esc(task.get("priority", "None"))
+    status = esc(task.get("status", ""))
+    assigned_to = esc(task.get("assigned_to", ""))
+    cc_people = esc(task.get("cc_people", ""))
+
+    mission = task.get("mission", "")
+    cycle = task.get("cycle", "")
+    division = task.get("division", "")
+    subassembly = task.get("subassembly", "")
+    linked_gantt_task = task.get("linked_gantt_task", "")
+    linked_gantt_phase = task.get("linked_gantt_phase", "")
+    description = task.get("description", "")
+    deliverable_link = str(task.get("deliverable_link", "") or "").strip()
+    due_date_raw = task.get("due_date", due_date_str)
+
+    priority_raw = str(priority).lower()
+    status_raw = str(status).lower()
+    time_raw = str(time_label).lower()
+
+    prio_color = "#3b82f6"
+    prio_bg = "rgba(59,130,246,.14)"
+    prio_label = "Standard Priority"
+
+    if "critical" in priority_raw:
+        prio_color = "#ef4444"
+        prio_bg = "rgba(239,68,68,.16)"
+        prio_label = "Critical Priority"
+    elif "high" in priority_raw:
+        prio_color = "#f97316"
+        prio_bg = "rgba(249,115,22,.16)"
+        prio_label = "High Priority"
+    elif "medium" in priority_raw:
+        prio_color = "#f59e0b"
+        prio_bg = "rgba(245,158,11,.16)"
+        prio_label = "Medium Priority"
+    elif "low" in priority_raw:
+        prio_color = "#64748b"
+        prio_bg = "rgba(100,116,139,.16)"
+        prio_label = "Low Priority"
+
+    status_color = "#64748b"
+    status_label = status or "Unspecified"
+
+    if "completed" in status_raw:
+        status_color = "#22c55e"
+    elif "progress" in status_raw:
+        status_color = "#3b82f6"
+    elif "review" in status_raw:
+        status_color = "#a855f7"
+    elif "blocked" in status_raw:
+        status_color = "#ef4444"
+    elif "cancelled" in status_raw:
+        status_color = "#64748b"
+    elif "not started" in status_raw:
+        status_color = "#94a3b8"
+
+    is_late = "late" in time_raw or "overdue" in time_raw
+    is_today = "today" in time_raw
+    is_tomorrow = "tomorrow" in time_raw
+
+    date_color = "#22c55e"
+    date_bg = "rgba(34,197,94,.14)"
+    date_label = "Upcoming"
+
+    if is_late:
+        date_color = "#ef4444"
+        date_bg = "rgba(239,68,68,.16)"
+        date_label = "Overdue"
+    elif is_today:
+        date_color = "#f59e0b"
+        date_bg = "rgba(245,158,11,.16)"
+        date_label = "Due Today"
+    elif is_tomorrow:
+        date_color = "#38bdf8"
+        date_bg = "rgba(56,189,248,.16)"
+        date_label = "Due Tomorrow"
+
+    mission_badges = ""
+    if mission:
+        mission_badges += badge(mission, "#ef4444" if str(mission).lower() == "mars" else "#3b82f6")
+    if cycle:
+        mission_badges += badge(cycle, "#475569")
+    if division:
+        mission_badges += badge(division, "#334155")
+    if linked_gantt_phase:
+        mission_badges += badge(linked_gantt_phase, "#6366f1")
+    if subassembly:
+        mission_badges += badge(subassembly, "#0f766e")
+
+    metadata_html = ""
+    metadata_html += metadata_row("Assigned To", assigned_to)
+    metadata_html += metadata_row("CC / Followers", cc_people)
+    metadata_html += metadata_row("Status", status)
+    metadata_html += metadata_row("Priority", priority)
+    metadata_html += metadata_row("Mission", mission)
+    metadata_html += metadata_row("Cycle", cycle)
+    metadata_html += metadata_row("Division", division)
+    metadata_html += metadata_row("Subassembly", subassembly)
+    metadata_html += metadata_row("Gantt Task", linked_gantt_task)
+    metadata_html += metadata_row("Gantt Phase", linked_gantt_phase)
+    metadata_html += metadata_row("Due Date", due_date_raw)
+
+    description_html = ""
+    if str(description or "").strip():
+        description_html = f"""
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-top:18px;">
+            <tr>
+              <td style="background:#0b1220; border:1px solid #273449; border-radius:18px; padding:19px;">
+                <p style="margin:0 0 8px 0; color:#93c5fd; font-size:12px; font-weight:900; letter-spacing:1.6px; text-transform:uppercase;">
+                  Task Brief
+                </p>
+                <p style="margin:0; color:#dbeafe; font-size:14px; line-height:1.7;">
+                  {esc(description)}
+                </p>
+              </td>
+            </tr>
+          </table>
+        """
+
+    deliverable_html = ""
+    if deliverable_link:
+        safe_link = esc(deliverable_link)
+        deliverable_html = f"""
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-top:18px;">
+            <tr>
+              <td style="background:#0f172a; border:1px solid #334155; border-radius:18px; padding:18px;">
+                <p style="margin:0 0 12px 0; color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:1.5px; text-transform:uppercase;">
+                  Deliverable Link
+                </p>
+                <a href="{safe_link}" style="color:#60a5fa; font-size:14px; line-height:1.6; font-weight:800; text-decoration:none;">
+                  {safe_link}
+                </a>
+              </td>
+            </tr>
+          </table>
+        """
+
+    return f"""
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+        <tr>
+          <td>
+
+            <p style="margin:0 0 10px 0; color:#93c5fd; font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">
+              Hello Team,
+            </p>
+
+            <p style="margin:0 0 28px 0; color:#cbd5e1; font-size:16px; line-height:1.75;">
+              A planner item requires attention. Review the task details below and update the PM dashboard when progress changes.
+            </p>
+
+            <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+              style="background:linear-gradient(145deg,#111c2e 0%,#0b1220 70%); border:1px solid #334155; border-radius:26px; overflow:hidden; box-shadow:0 18px 45px rgba(0,0,0,.36);">
+
+              <tr>
+                <td style="padding:26px 26px 22px 26px; border-left:7px solid {prio_color}; background:linear-gradient(135deg,#18243a 0%,#101827 100%);">
+
+                  <p style="margin:0 0 12px 0; color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:2.2px; text-transform:uppercase;">
+                    Task Objective
+                  </p>
+
+                  <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
+                    <tr>
+                      <td style="background:{prio_bg}; border:1px solid {prio_color}; border-radius:18px; padding:18px 20px; box-shadow:0 14px 30px rgba(0,0,0,.24);">
+                        <h2 style="margin:0; color:#ffffff; font-size:27px; line-height:1.22; font-weight:950; letter-spacing:-.5px;">
+                          {task_title}
+                        </h2>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <div style="margin-top:16px;">
+                    {mission_badges}
+                  </div>
+
+                </td>
+              </tr>
+
+              <tr>
+                <td style="padding:24px;">
+
+                  <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                    <tr>
+
+                      <td width="50%" style="padding-right:8px; vertical-align:top;">
+                        <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+                          style="background:{date_bg}; border:1px solid {date_color}; border-radius:20px;">
+                          <tr>
+                            <td style="padding:22px; text-align:center;">
+                              <p style="margin:0 0 9px 0; color:#cbd5e1; font-size:12px; font-weight:900; letter-spacing:1.7px; text-transform:uppercase;">
+                                Deadline
+                              </p>
+                              <p style="margin:0; color:{date_color}; font-size:25px; line-height:1.1; font-weight:950;">
+                                {esc(due_date_str)}
+                              </p>
+                              <p style="margin:11px 0 0 0;">
+                                <span style="display:inline-block; background:{date_color}; color:#020617; padding:7px 11px; border-radius:999px; font-size:11px; font-weight:950; letter-spacing:.8px; text-transform:uppercase;">
+                                  {esc(date_label)} • {esc(time_label)}
+                                </span>
+                              </p>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+
+                      <td width="50%" style="padding-left:8px; vertical-align:top;">
+                        <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+                          style="background:{prio_bg}; border:1px solid {prio_color}; border-radius:20px;">
+                          <tr>
+                            <td style="padding:22px; text-align:center;">
+                              <p style="margin:0 0 9px 0; color:#cbd5e1; font-size:12px; font-weight:900; letter-spacing:1.7px; text-transform:uppercase;">
+                                Priority
+                              </p>
+                              <p style="margin:0; color:{prio_color}; font-size:25px; line-height:1.1; font-weight:950; text-transform:uppercase;">
+                                {priority}
+                              </p>
+                              <p style="margin:11px 0 0 0; color:#e2e8f0; font-size:13px; font-weight:750;">
+                                {esc(prio_label)}
+                              </p>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+
+                    </tr>
+                  </table>
+
+                  <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-top:16px;">
+                    <tr>
+                      <td style="background:#101827; border:1px solid #334155; border-radius:20px; padding:20px;">
+
+                        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                          <tr>
+                            <td width="50%" style="padding-right:8px; vertical-align:top;">
+                              <p style="margin:0 0 8px 0; color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:1.5px; text-transform:uppercase;">
+                                Current Status
+                              </p>
+                              <p style="margin:0; color:{status_color}; font-size:20px; font-weight:950;">
+                                {esc(status_label)}
+                              </p>
+                            </td>
+                            <td width="50%" style="padding-left:8px; vertical-align:top;">
+                              <p style="margin:0 0 8px 0; color:#94a3b8; font-size:12px; font-weight:900; letter-spacing:1.5px; text-transform:uppercase;">
+                                Assigned To
+                              </p>
+                              <p style="margin:0; color:#ffffff; font-size:18px; font-weight:850; line-height:1.35;">
+                                {assigned_to if assigned_to else "Unassigned"}
+                              </p>
+                            </td>
+                          </tr>
+                        </table>
+
+                      </td>
+                    </tr>
+                  </table>
+
+                  <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-top:18px;">
+                    <tr>
+                      <td style="background:#0b1220; border:1px solid #273449; border-radius:20px; padding:20px;">
+                        <p style="margin:0 0 12px 0; color:#93c5fd; font-size:12px; font-weight:900; letter-spacing:1.8px; text-transform:uppercase;">
+                          Mission Context
+                        </p>
+
+                        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                          {metadata_html}
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+
+                  {description_html}
+                  {deliverable_html}
+
+                </td>
+              </tr>
+
+            </table>
+
+          </td>
+        </tr>
+      </table>
+    """
 
 
 def send_email(to_email, cc_emails, subject, message_body):
@@ -159,120 +491,6 @@ def send_email(to_email, cc_emails, subject, message_body):
 
     except Exception as e:
         return False, str(e)
-
-
-def build_task_email(task, due_date_str, time_label):
-    task_title = esc(task.get("title", "Unknown"))
-    priority = esc(task.get("priority", "None"))
-    status = esc(task.get("status", ""))
-    assigned_to = esc(task.get("assigned_to", ""))
-
-    priority_raw = priority.lower()
-
-    prio_color = "#3b82f6"
-    prio_label = "Standard"
-
-    if "critical" in priority_raw or "high" in priority_raw:
-        prio_color = "#ef4444"
-        prio_label = "High Priority"
-    elif "medium" in priority_raw:
-        prio_color = "#f59e0b"
-        prio_label = "Medium Priority"
-
-    is_late = "late" in time_label.lower()
-
-    date_color = "#ef4444" if is_late else "#22c55e"
-    date_label = "Overdue" if is_late else "Upcoming"
-
-    return f"""
-      <p style="margin:0 0 10px 0; color:#93c5fd; font-size:13px; font-weight:800; letter-spacing:2px; text-transform:uppercase;">
-        Hello Team,
-      </p>
-
-      <p style="margin:0 0 28px 0; color:#e2e8f0; font-size:17px; line-height:1.7;">
-        A planner item requires attention. Please review the task below and update the dashboard when progress changes.
-      </p>
-
-      <table width="100%" cellpadding="0" cellspacing="0"
-        style="background:#0b1220; border:1px solid #334155; border-radius:24px; overflow:hidden;">
-
-        <tr>
-          <td style="padding:26px; border-left:6px solid {prio_color}; background:#111c2e;">
-
-            <p style="margin:0 0 8px 0; color:#64748b; font-size:12px; font-weight:800; letter-spacing:2px; text-transform:uppercase;">
-              Target Objective
-            </p>
-
-            <h2 style="margin:0; color:#ffffff; font-size:25px; line-height:1.2; font-weight:900;">
-              {task_title}
-            </h2>
-
-          </td>
-        </tr>
-
-        <tr>
-          <td style="padding:24px;">
-
-            <table width="100%" cellpadding="0" cellspacing="0">
-              <tr>
-
-                <td width="50%" style="padding-right:8px;">
-                  <table width="100%" cellpadding="0" cellspacing="0"
-                    style="background:#101827; border:1px solid #334155; border-radius:18px;">
-                    <tr>
-                      <td style="padding:20px; text-align:center;">
-                        <p style="margin:0 0 8px 0; color:#94a3b8; font-size:12px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;">
-                          Timeline
-                        </p>
-                        <p style="margin:0; color:{date_color}; font-size:22px; font-weight:900;">
-                          {esc(due_date_str)}
-                        </p>
-                        <p style="margin:8px 0 0 0; color:#e2e8f0; font-size:13px; font-weight:700;">
-                          {esc(date_label)} • Due {esc(time_label)}
-                        </p>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-
-                <td width="50%" style="padding-left:8px;">
-                  <table width="100%" cellpadding="0" cellspacing="0"
-                    style="background:#101827; border:1px solid #334155; border-radius:18px;">
-                    <tr>
-                      <td style="padding:20px; text-align:center;">
-                        <p style="margin:0 0 8px 0; color:#94a3b8; font-size:12px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;">
-                          Priority
-                        </p>
-                        <p style="margin:0; color:{prio_color}; font-size:22px; font-weight:900; text-transform:uppercase;">
-                          {priority}
-                        </p>
-                        <p style="margin:8px 0 0 0; color:#e2e8f0; font-size:13px; font-weight:700;">
-                          {prio_label}
-                        </p>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-
-              </tr>
-            </table>
-
-            <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px;">
-              <tr>
-                <td style="background:#101827; border:1px solid #334155; border-radius:18px; padding:18px;">
-                  <p style="margin:0; color:#94a3b8; font-size:13px; line-height:1.7;">
-                    <strong style="color:#ffffff;">Assigned to:</strong> {assigned_to}<br>
-                    <strong style="color:#ffffff;">Current status:</strong> {status}
-                  </p>
-                </td>
-              </tr>
-            </table>
-
-          </td>
-        </tr>
-
-      </table>
-    """
 
 
 def process_queue():
