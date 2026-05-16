@@ -39,14 +39,12 @@ def send_email(to_email, cc_emails, subject, message_body):
         return False, "Gmail Address or App Password secret is missing."
         
     msg = MIMEMultipart()
-    # Looks like a human team name
     msg['From'] = f"Project AV <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # Bare-minimum HTML that mimics a human typing in Gmail or Outlook
     html_content = f"""
     <html>
       <body style="font-family: Arial, Helvetica, sans-serif; color: #222222; font-size: 14px; line-height: 1.5; max-width: 600px;">
@@ -132,7 +130,6 @@ def process_queue():
                     task_id = task.get("task_id", "")
                     already_queued = False
                     if not df_notif.empty:
-                        # Checking against the new human-readable subject line
                         mask = (
                             (df_notif["task_id"] == task_id) & 
                             (df_notif["subject"].str.lower().str.contains(time_label, regex=False, na=False)) &
@@ -142,8 +139,6 @@ def process_queue():
                     
                     if not already_queued:
                         print(f"Auto-queuing {time_label} reminder for task: {task.get('title', 'Unknown')}")
-                        
-                        # Creating a non-spammy subject line and colorful but standard message body
                         new_row = {
                             "notification_id": str(uuid.uuid4()),
                             "task_id": task_id,
@@ -175,24 +170,49 @@ def process_queue():
         print("No emails to send right now.")
     else:
         for idx, row in emails_to_send.iterrows():
-            recipient_name = row.get("recipient", "")
+            recipient_raw = str(row.get("recipient", ""))
             
-            to_email = ""
-            if not df_memb.empty and recipient_name:
-                match = df_memb[df_memb["member_name"] == recipient_name]
-                if not match.empty:
-                    to_email = match.iloc[0].get("email", "")
+            # 1. SMART PARSING: Split multiple targets separated by commas
+            raw_targets = [r.strip() for r in recipient_raw.split(",") if r.strip()]
+            resolved_emails = []
             
-            if not to_email or "@" not in to_email:
+            for target in raw_targets:
+                if "@" in target:
+                    # It's already an email, just add it!
+                    resolved_emails.append(target)
+                elif not df_memb.empty:
+                    # It's a name, look it up in the directory
+                    match = df_memb[df_memb["member_name"] == target]
+                    if not match.empty:
+                        em = str(match.iloc[0].get("email", ""))
+                        if "@" in em:
+                            resolved_emails.append(em)
+            
+            # Remove any duplicates
+            resolved_emails = list(dict.fromkeys(resolved_emails))
+            
+            # If we still couldn't resolve any valid emails, skip it.
+            if not resolved_emails:
                 df_notif.at[idx, "status"] = "Failed"
-                df_notif.at[idx, "error"] = f"No valid email found for {recipient_name}"
-                print(f"Skipped {recipient_name} - no email found in directory.")
+                df_notif.at[idx, "error"] = f"No valid email found for: {recipient_raw}"
+                print(f"Skipped {recipient_raw} - no email found.")
                 continue
 
-            print(f"Sending email to {to_email}...")
+            # The first email goes to the "To:" line
+            to_email = resolved_emails[0]
+            
+            # Any additional resolved emails are added to the "CC:" line
+            existing_cc = str(row.get("cc_people", ""))
+            cc_list = [c.strip() for c in existing_cc.split(",") if c.strip()]
+            if len(resolved_emails) > 1:
+                cc_list.extend(resolved_emails[1:])
+            
+            final_cc = ",".join(list(dict.fromkeys(cc_list)))
+
+            print(f"Sending email to {to_email} (CC: {final_cc})...")
             success, err_msg = send_email(
                 to_email=to_email,
-                cc_emails=row.get("cc_people", ""),
+                cc_emails=final_cc,
                 subject=row.get("subject", "Task Update"),
                 message_body=row.get("message", "")
             )
