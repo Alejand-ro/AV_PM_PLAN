@@ -34,31 +34,19 @@ def get_sheet_client():
         print(f"CRITICAL ERROR loading Google Credentials: {e}")
         sys.exit(1)
 
-def send_email(to_email, cc_emails, subject, message_body):
+def send_email(to_email, cc_emails, subject, html_content):
     if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
         return False, "Gmail Address or App Password secret is missing."
         
     msg = MIMEMultipart()
-    msg['From'] = f"Project AV <{GMAIL_ADDRESS}>"
+    msg['From'] = f"Project AV Command <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # PURE PLAIN TEXT. Zero HTML. This looks exactly like a human typed it.
-    plain_text = f"""Hey,
-
-Just doing a quick check-in on the project board. 
-
-{message_body}
-
-Let me know if you are stuck on anything or if you need help. If you're making progress, just update the board when you have a second.
-
-Thanks,
-Project AV Lead
-"""
-    # Notice we changed 'html' to 'plain' here
-    msg.attach(MIMEText(plain_text, 'plain'))
+    # Attach the beautiful HTML payload
+    msg.attach(MIMEText(html_content, 'html'))
 
     all_recipients = [to_email]
     if cc_emails:
@@ -73,6 +61,85 @@ Project AV Lead
         return True, ""
     except Exception as e:
         return False, str(e)
+
+def generate_beautiful_html(task_title, due_date_str, priority, time_label):
+    """Generates a stunning dark-mode HTML email template."""
+    
+    # Determine color based on priority
+    prio_color = "#3b82f6" # Default blue
+    if "high" in priority.lower() or "critical" in priority.lower():
+        prio_color = "#ef4444" # Red
+    elif "medium" in priority.lower():
+        prio_color = "#f59e0b" # Orange
+        
+    # Determine due date color
+    date_color = "#ef4444" if "late" in time_label.lower() else "#10b981"
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin: 0; padding: 0; background-color: #020617; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #020617; padding: 40px 20px;">
+        <tr>
+          <td align="center">
+            <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; background-color: #0f172a; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #1e293b;">
+              
+              <tr>
+                <td style="background: linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%); padding: 25px; text-align: center;">
+                  <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: 2px; text-transform: uppercase;">Project AV Command</h1>
+                </td>
+              </tr>
+              
+              <tr>
+                <td style="padding: 35px 30px;">
+                  <p style="color: #94a3b8; font-size: 16px; margin-top: 0;">Incoming Task Notification,</p>
+                  <p style="color: #e2e8f0; font-size: 16px; line-height: 1.6;">You have an action item requiring your attention. Please review the task details below and update your status on the dashboard.</p>
+                  
+                  <div style="background-color: #1e293b; border-left: 5px solid {prio_color}; padding: 20px; margin: 30px 0; border-radius: 4px;">
+                    <h2 style="color: #f8fafc; margin: 0 0 15px 0; font-size: 20px;">{task_title}</h2>
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Status:</td>
+                        <td style="color: #f8fafc; padding-bottom: 8px;">Due {time_label}</td>
+                      </tr>
+                      <tr>
+                        <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Timeline:</td>
+                        <td style="color: {date_color}; padding-bottom: 8px; font-weight: bold;">{due_date_str}</td>
+                      </tr>
+                      <tr>
+                        <td width="30%" style="color: #94a3b8; font-weight: bold;">Priority:</td>
+                        <td style="color: {prio_color}; font-weight: bold;">{priority}</td>
+                      </tr>
+                    </table>
+                  </div>
+                  
+                  <table width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td align="center" style="padding: 20px 0;">
+                        <a href="https://project-av-pm-weekly.streamlit.app" style="background-color: #3b82f6; color: #ffffff; padding: 14px 30px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block; text-transform: uppercase; letter-spacing: 1px;">Access Dashboard</a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+              
+              <tr>
+                <td style="background-color: #0b1120; padding: 20px; text-align: center; border-top: 1px solid #1e293b;">
+                  <p style="color: #64748b; font-size: 12px; margin: 0; line-height: 1.5;">
+                    ⚠️ <strong>AUTOMATED MESSAGE - DO NOT REPLY</strong> ⚠️<br>
+                    This is a system-generated notification from the Project AV PM Database. Replies to this email address are not monitored.
+                  </p>
+                </td>
+              </tr>
+              
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+    """
+    return html
 
 def process_queue():
     print("Starting Project AV Mailer Script...")
@@ -122,27 +189,37 @@ def process_queue():
                 if time_label:
                     task_id = task.get("task_id", "")
                     already_queued = False
+                    
+                    # ---------------------------------------------------------
+                    # BULLETPROOF DEDUPLICATION CHECK:
+                    # Checks if a notification for THIS task ID was created TODAY.
+                    # This guarantees it will NEVER send duplicates on the same day.
+                    # ---------------------------------------------------------
                     if not df_notif.empty:
-                        # Checking against the new casual subject line
                         mask = (
-                            (df_notif["task_id"] == task_id) & 
-                            (df_notif["subject"].str.lower().str.contains("following up on", regex=False, na=False)) &
+                            (df_notif["task_id"] == str(task_id)) & 
                             (df_notif["created_at"].str.startswith(today_str, na=False))
                         )
-                        if mask.any(): already_queued = True
+                        if mask.any(): 
+                            already_queued = True
                     
                     if not already_queued:
                         print(f"Auto-queuing {time_label} reminder for task: {task.get('title', 'Unknown')}")
                         
-                        # Completely natural lowercase subject and plain text body formatting
+                        task_title = task.get('title', 'Unknown')
+                        priority = task.get('priority', 'None')
+                        
+                        # Generate the beautiful HTML string
+                        html_payload = generate_beautiful_html(task_title, due_date_str, priority, time_label)
+                        
                         new_row = {
                             "notification_id": str(uuid.uuid4()),
                             "task_id": task_id,
                             "notification_type": "Deadline Reminder",
                             "recipient": task.get("assigned_to", ""),
                             "cc_people": task.get("cc_people", ""),
-                            "subject": f"following up on {task.get('title', 'Unknown')}",
-                            "message": f"- Task: {task.get('title', 'Unknown')}\n- Due: {due_date_str}\n- Priority: {task.get('priority', 'None')}",
+                            "subject": f"Project AV | Task Update: {task_title}",
+                            "message": html_payload, # Storing the HTML directly in the queue
                             "status": "Queued",
                             "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "sent_at": "",
@@ -168,6 +245,7 @@ def process_queue():
         for idx, row in emails_to_send.iterrows():
             recipient_raw = str(row.get("recipient", ""))
             
+            # SMART PARSING: Handle lists, names, and raw emails perfectly
             raw_targets = [r.strip() for r in recipient_raw.split(",") if r.strip()]
             resolved_emails = []
             
@@ -198,12 +276,12 @@ def process_queue():
             
             final_cc = ",".join(list(dict.fromkeys(cc_list)))
 
-            print(f"Sending email to {to_email} (CC: {final_cc})...")
+            print(f"Sending HTML email to {to_email} (CC: {final_cc})...")
             success, err_msg = send_email(
                 to_email=to_email,
                 cc_emails=final_cc,
                 subject=row.get("subject", "Task Update"),
-                message_body=row.get("message", "")
+                html_content=row.get("message", "") # Passing the HTML from the queue
             )
             
             if success:
