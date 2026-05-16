@@ -848,9 +848,28 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
             fig_overlay.update_layout(barmode="group")
             fig_overlay.update_yaxes(autorange="reversed", title="")
             fig_overlay.update_xaxes(title="Timeline Overlay")
-            fig_overlay.update_traces(marker_line_width=1, opacity=0.95)
-            fig_overlay.add_vline(x=today, line_dash="dash", line_color="#000000", annotation_text="Today", annotation_position="top right")
-            fig_overlay.update_layout(height=max(400, len(y_order) * 22), bargap=0.15)
+            fig_overlay.update_traces(marker_line_width=2, opacity=0.98)
+            today_dt = pd.Timestamp.today().normalize().to_pydatetime()
+            fig_overlay.add_shape(
+                type="line",
+                x0=today_dt,
+                x1=today_dt,
+                y0=0,
+                y1=1,
+                xref="x",
+                yref="paper",
+                line=dict(color="#ffffff", width=2, dash="dash"),
+            )
+            fig_overlay.add_annotation(
+                x=today_dt,
+                y=1.03,
+                xref="x",
+                yref="paper",
+                text="Today",
+                showarrow=False,
+                font=dict(color="#ffffff", size=12),
+            )
+            fig_overlay.update_layout(height=max(520, len(y_order) * 26), bargap=0.12)
             st.plotly_chart(plotly_theme(fig_overlay), use_container_width=True)
 
         merged_df["ongoing_slip_days"] = 0
