@@ -38,15 +38,16 @@ def send_email(to_email, cc_emails, subject, html_content):
     if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
         return False, "Gmail Address or App Password secret is missing."
         
-    msg = MIMEMultipart()
+    # FIX: 'alternative' tells the email client to expect and prioritize HTML formatting
+    msg = MIMEMultipart('alternative')
     msg['From'] = f"Project AV Command <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # Attach the beautiful HTML payload
-    msg.attach(MIMEText(html_content, 'html'))
+    # FIX: Explicitly setting utf-8 encoding so special characters and styling don't break
+    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 
     all_recipients = [to_email]
     if cc_emails:
@@ -65,19 +66,21 @@ def send_email(to_email, cc_emails, subject, html_content):
 def generate_beautiful_html(task_title, due_date_str, priority, time_label):
     """Generates a stunning dark-mode HTML email template."""
     
-    # Determine color based on priority
-    prio_color = "#3b82f6" # Default blue
+    prio_color = "#3b82f6" 
     if "high" in priority.lower() or "critical" in priority.lower():
-        prio_color = "#ef4444" # Red
+        prio_color = "#ef4444" 
     elif "medium" in priority.lower():
-        prio_color = "#f59e0b" # Orange
+        prio_color = "#f59e0b" 
         
-    # Determine due date color
     date_color = "#ef4444" if "late" in time_label.lower() else "#10b981"
 
     html = f"""
     <!DOCTYPE html>
     <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
     <body style="margin: 0; padding: 0; background-color: #020617; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
       <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #020617; padding: 40px 20px;">
         <tr>
@@ -190,11 +193,6 @@ def process_queue():
                     task_id = task.get("task_id", "")
                     already_queued = False
                     
-                    # ---------------------------------------------------------
-                    # BULLETPROOF DEDUPLICATION CHECK:
-                    # Checks if a notification for THIS task ID was created TODAY.
-                    # This guarantees it will NEVER send duplicates on the same day.
-                    # ---------------------------------------------------------
                     if not df_notif.empty:
                         mask = (
                             (df_notif["task_id"] == str(task_id)) & 
@@ -209,7 +207,6 @@ def process_queue():
                         task_title = task.get('title', 'Unknown')
                         priority = task.get('priority', 'None')
                         
-                        # Generate the beautiful HTML string
                         html_payload = generate_beautiful_html(task_title, due_date_str, priority, time_label)
                         
                         new_row = {
@@ -219,7 +216,7 @@ def process_queue():
                             "recipient": task.get("assigned_to", ""),
                             "cc_people": task.get("cc_people", ""),
                             "subject": f"Project AV | Task Update: {task_title}",
-                            "message": html_payload, # Storing the HTML directly in the queue
+                            "message": html_payload, 
                             "status": "Queued",
                             "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "sent_at": "",
@@ -245,7 +242,6 @@ def process_queue():
         for idx, row in emails_to_send.iterrows():
             recipient_raw = str(row.get("recipient", ""))
             
-            # SMART PARSING: Handle lists, names, and raw emails perfectly
             raw_targets = [r.strip() for r in recipient_raw.split(",") if r.strip()]
             resolved_emails = []
             
@@ -281,7 +277,7 @@ def process_queue():
                 to_email=to_email,
                 cc_emails=final_cc,
                 subject=row.get("subject", "Task Update"),
-                html_content=row.get("message", "") # Passing the HTML from the queue
+                html_content=row.get("message", "") 
             )
             
             if success:
