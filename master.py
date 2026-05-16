@@ -753,6 +753,7 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
         return
 
     st.subheader("Baseline Planned Timeline")
+    st.markdown("<div class='chart-desc'>Baseline Planned Timeline shows the original schedule from the planned baseline. These bars represent the target start and finish for each task.</div>", unsafe_allow_html=True)
     fig_plan = px.timeline(plan_df, x_start="start_date", x_end="end_date", y="task", color="phase", hover_data=["task", "phase", "duration"])
     fig_plan.update_yaxes(autorange="reversed", title="")
     fig_plan.update_xaxes(title="Timeline")
@@ -762,20 +763,22 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
     if not act_df.empty:
         st.divider()
         st.subheader("Plan vs. Actual Execution")
-        
+        st.markdown("<div class='chart-desc'>Planned bars are displayed alongside actual execution. Completed actual bars use the finished actual dates; ongoing actual bars use today as a display-only end date when actual_end_date is blank.</div>", unsafe_allow_html=True)
+
         merged_df = build_plan_vs_actual_dataframe(plan_df, act_df)
-        
+        today = pd.Timestamp.now().normalize()
+
         if "percent_complete" in merged_df.columns:
             avg_pct = merged_df["percent_complete"].mean()
         else:
             avg_pct = 0
-            
+
         st.markdown('<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:20px;">', unsafe_allow_html=True)
         completed = len(merged_df[merged_df["schedule_status"] == "Complete"])
         delayed = len(merged_df[merged_df["schedule_status"] == "Delayed"])
         at_risk = len(merged_df[merged_df["schedule_status"] == "At Risk"])
         not_updated = len(merged_df[merged_df["schedule_status"].isin(["Not Updated", "Not Started"])])
-        
+
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Avg % Complete", f"{avg_pct:.1f}%")
         m2.metric("Tasks Complete", completed)
@@ -787,23 +790,142 @@ def render_gantt_charts(plan_df: pd.DataFrame, act_df: pd.DataFrame, render_miss
         plot_items = []
         for _, row in merged_df.iterrows():
             if pd.notna(row.get("start_date")) and pd.notna(row.get("end_date")):
-                plot_items.append({"task": row["task"], "start": row["start_date"], "end": row["end_date"], "Type": "Planned Schedule"})
-            if pd.notna(row.get("actual_start_date")) and pd.notna(row.get("actual_end_date")):
-                plot_items.append({"task": row["task"], "start": row["actual_start_date"], "end": row["actual_end_date"], "Type": "Actual Execution"})
-                
+                plot_items.append({
+                    "task": row["task"],
+                    "start": row["start_date"],
+                    "end": row["end_date"],
+                    "Type": "Planned Schedule",
+                })
+
+            if pd.notna(row.get("actual_start_date")):
+                actual_end = row["actual_end_date"] if pd.notna(row.get("actual_end_date")) else today
+                actual_type = "Completed Actual" if pd.notna(row.get("actual_end_date")) else "Ongoing Actual"
+                if str(row.get("schedule_status", "")).strip() == "Delayed":
+                    actual_type = "Delayed Actual"
+                elif str(row.get("schedule_status", "")).strip() == "At Risk":
+                    actual_type = "At Risk Actual"
+
+                plot_items.append({
+                    "task": row["task"],
+                    "start": row["actual_start_date"],
+                    "end": actual_end,
+                    "Type": actual_type,
+                })
+
         if plot_items:
             overlay_df = pd.DataFrame(plot_items)
-            color_map = {"Planned Schedule": "rgba(255,255,255,0.25)", "Actual Execution": primary}
-            
-            fig_overlay = px.timeline(overlay_df, x_start="start", x_end="end", y="task", color="Type", color_discrete_map=color_map)
+            color_map = {
+                "Planned Schedule": "rgba(255,255,255,0.25)",
+                "Ongoing Actual": primary,
+                "Completed Actual": "#22c55e",
+                "Delayed Actual": "#ef4444",
+                "At Risk Actual": "#a855f7",
+            }
+            fig_overlay = px.timeline(
+                overlay_df,
+                x_start="start",
+                x_end="end",
+                y="task",
+                color="Type",
+                color_discrete_map=color_map,
+                hover_data=["task", "Type"],
+            )
             fig_overlay.update_layout(barmode="group")
             fig_overlay.update_yaxes(autorange="reversed", title="")
             fig_overlay.update_xaxes(title="Timeline Overlay")
             fig_overlay.update_layout(height=max(400, len(plan_df) * 45))
             st.plotly_chart(plotly_theme(fig_overlay), use_container_width=True)
-            
+
+        merged_df = merged_df.copy()
+        merged_df["ongoing_slip_days"] = 0
+        if pd.api.types.is_datetime64_any_dtype(merged_df.get("actual_start_date")) and pd.api.types.is_datetime64_any_dtype(merged_df.get("end_date")):
+            merged_df["ongoing_slip_days"] = np.where(
+                (pd.notna(merged_df["actual_start_date"])) &
+                (pd.isna(merged_df["actual_end_date"])) &
+                (pd.notna(merged_df["end_date"])) &
+                (today > merged_df["end_date"]),
+                (today - merged_df["end_date"]).dt.days,
+                0,
+            )
+        else:
+            merged_df["ongoing_slip_days"] = 0
+
+        st.divider()
+        st.subheader("Schedule Drift Analytics")
+        st.markdown("<div class='chart-desc'>Schedule Drift Analytics helps identify when work starts or finishes off-target. It highlights average and median delays, ongoing slip, and how delay relates to task completion.</div>", unsafe_allow_html=True)
+
+        avg_start = merged_df["actual_start_variance_days"].dropna()
+        avg_finish = merged_df["actual_end_variance_days"].dropna()
+        ongoing_tasks = len(merged_df[(pd.notna(merged_df["actual_start_date"])) & pd.isna(merged_df["actual_end_date"])])
+        past_end = int((merged_df["ongoing_slip_days"] > 0).sum())
+
+        start_delay_avg = f"{avg_start.mean():.1f}" if not avg_start.empty else "0"
+        start_delay_med = f"{avg_start.median():.1f}" if not avg_start.empty else "0"
+        finish_delay_avg = f"{avg_finish.mean():.1f}" if not avg_finish.empty else "0"
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Average Start Delay", start_delay_avg)
+        c2.metric("Median Start Delay", start_delay_med)
+        c3.metric("Average Finish Delay", finish_delay_avg)
+        c4.metric("Active Ongoing Tasks", ongoing_tasks)
+        c5.metric("Tasks Past Planned End", past_end)
+
+        if not avg_start.empty:
+            st.markdown("<h5>Start Delay Distribution</h5><div class='chart-desc'>Shows how many Gantt tasks started early, on time, or late. Negative means early, positive means late.</div>", unsafe_allow_html=True)
+            fig_start_hist = px.histogram(
+                merged_df,
+                x="actual_start_variance_days",
+                nbins=20,
+                title="Start Delay Distribution",
+                labels={"actual_start_variance_days": "Start Variance (days)"},
+            )
+            st.plotly_chart(plotly_theme(fig_start_hist), use_container_width=True)
+
+        if not avg_start.empty and "phase" in merged_df.columns:
+            st.markdown("<h5>Delay Spread by Gantt Phase</h5><div class='chart-desc'>Shows which Gantt phases are most inconsistent or delayed.</div>", unsafe_allow_html=True)
+            fig_phase_box = px.box(
+                merged_df,
+                x="phase",
+                y="actual_start_variance_days",
+                title="Delay Spread by Gantt Phase",
+                points="all",
+            )
+            st.plotly_chart(plotly_theme(fig_phase_box), use_container_width=True)
+
+        slip_df = merged_df[merged_df["ongoing_slip_days"] > 0].copy()
+        if not slip_df.empty:
+            st.markdown("<h5>Ongoing Tasks Past Planned End</h5><div class='chart-desc'>Shows active tasks that are still open after their planned finish date.</div>", unsafe_allow_html=True)
+            fig_slip = px.bar(
+                slip_df,
+                x="task",
+                y="ongoing_slip_days",
+                title="Ongoing Tasks Past Planned End",
+                labels={"ongoing_slip_days": "Slip Days", "task": "Task"},
+                color="ongoing_slip_days",
+                color_continuous_scale="OrRd",
+            )
+            fig_slip.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(plotly_theme(fig_slip), use_container_width=True)
+
+        valid_scatter = merged_df.copy()
+        if "actual_start_variance_days" in valid_scatter.columns and "percent_complete" in valid_scatter.columns and "schedule_status" in valid_scatter.columns:
+            valid_scatter = valid_scatter[pd.notna(valid_scatter["actual_start_variance_days"]) & pd.notna(valid_scatter["percent_complete"])]
+            if not valid_scatter.empty:
+                st.markdown("<h5>Delay vs Completion</h5><div class='chart-desc'>Shows whether late-starting tasks are still progressing or stuck.</div>", unsafe_allow_html=True)
+                hover_cols = [c for c in ["task", "phase", "owner", "notes"] if c in valid_scatter.columns]
+                fig_delay = px.scatter(
+                    valid_scatter,
+                    x="actual_start_variance_days",
+                    y="percent_complete",
+                    color="schedule_status",
+                    hover_data=hover_cols,
+                    title="Delay vs Completion",
+                    labels={"actual_start_variance_days": "Start Variance (days)", "percent_complete": "% Complete"},
+                )
+                st.plotly_chart(plotly_theme(fig_delay), use_container_width=True)
+
         st.markdown("##### Variance Analytics Data")
-        view_cols = ["task", "phase", "start_date", "end_date", "actual_start_date", "actual_end_date", "percent_complete", "schedule_status", "actual_start_variance_days", "actual_end_variance_days", "owner", "notes"]
+        view_cols = ["task", "phase", "start_date", "end_date", "actual_start_date", "actual_end_date", "percent_complete", "schedule_status", "actual_start_variance_days", "actual_end_variance_days", "ongoing_slip_days", "owner", "notes"]
         valid_cols = [c for c in view_cols if c in merged_df.columns]
         st.dataframe(merged_df[valid_cols], use_container_width=True, hide_index=True)
 
