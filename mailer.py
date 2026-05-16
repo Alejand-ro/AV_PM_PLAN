@@ -24,7 +24,10 @@ def get_sheet_client():
     try:
         creds_dict = json.loads(GCP_JSON)
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            creds_dict, scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
         )
         return gspread.authorize(creds)
     except Exception as e:
