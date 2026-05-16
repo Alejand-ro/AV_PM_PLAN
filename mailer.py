@@ -38,7 +38,7 @@ def send_email(to_email, cc_emails, subject, html_content):
     if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
         return False, "Gmail Address or App Password secret is missing."
         
-    # FIX: 'alternative' tells the email client to expect and prioritize HTML formatting
+    # 'alternative' tells the client to pick the best format available (HTML)
     msg = MIMEMultipart('alternative')
     msg['From'] = f"Project AV Command <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
@@ -46,8 +46,16 @@ def send_email(to_email, cc_emails, subject, html_content):
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # FIX: Explicitly setting utf-8 encoding so special characters and styling don't break
-    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+    # FIX: We MUST provide a plain text fallback first, or strict clients strip the HTML
+    text_fallback = "You have a new task update for Project AV. Please check your dashboard to view the details: https://project-av-pm-weekly.streamlit.app\n\n(Automated Message - Do Not Reply)"
+    
+    part1 = MIMEText(text_fallback, 'plain', 'utf-8')
+    part2 = MIMEText(html_content, 'html', 'utf-8')
+
+    # Attach parts into message container.
+    # The email client will prioritize the LAST attached part (which is our HTML)
+    msg.attach(part1)
+    msg.attach(part2)
 
     all_recipients = [to_email]
     if cc_emails:
