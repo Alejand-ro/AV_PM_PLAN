@@ -45,27 +45,20 @@ def send_email(to_email, cc_emails, subject, message_body):
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    html_content = f"""
-    <html>
-      <body style="font-family: Arial, Helvetica, sans-serif; color: #222222; font-size: 14px; line-height: 1.5; max-width: 600px;">
-        <p>Hi,</p>
-        
-        <p>Just sending a quick heads-up about an upcoming task for Project AV.</p>
-        
-        <div style="margin: 15px 0; padding: 10px 15px; border-left: 3px solid #2563eb; background-color: #fcfcfc;">
-          {message_body}
-        </div>
-        
-        <p>Please let the team lead know if you run into any blockers, and update your status on the board when you get a chance.</p>
-        
-        <p>
-          Best,<br>
-          <span style="color: #2563eb; font-weight: bold;">Project AV</span>
-        </p>
-      </body>
-    </html>
-    """
-    msg.attach(MIMEText(html_content, 'html'))
+    # PURE PLAIN TEXT. Zero HTML. This looks exactly like a human typed it.
+    plain_text = f"""Hey,
+
+Just doing a quick check-in on the project board. 
+
+{message_body}
+
+Let me know if you are stuck on anything or if you need help. If you're making progress, just update the board when you have a second.
+
+Thanks,
+Project AV Lead
+"""
+    # Notice we changed 'html' to 'plain' here
+    msg.attach(MIMEText(plain_text, 'plain'))
 
     all_recipients = [to_email]
     if cc_emails:
@@ -130,23 +123,26 @@ def process_queue():
                     task_id = task.get("task_id", "")
                     already_queued = False
                     if not df_notif.empty:
+                        # Checking against the new casual subject line
                         mask = (
                             (df_notif["task_id"] == task_id) & 
-                            (df_notif["subject"].str.lower().str.contains(time_label, regex=False, na=False)) &
+                            (df_notif["subject"].str.lower().str.contains("following up on", regex=False, na=False)) &
                             (df_notif["created_at"].str.startswith(today_str, na=False))
                         )
                         if mask.any(): already_queued = True
                     
                     if not already_queued:
                         print(f"Auto-queuing {time_label} reminder for task: {task.get('title', 'Unknown')}")
+                        
+                        # Completely natural lowercase subject and plain text body formatting
                         new_row = {
                             "notification_id": str(uuid.uuid4()),
                             "task_id": task_id,
                             "notification_type": "Deadline Reminder",
                             "recipient": task.get("assigned_to", ""),
                             "cc_people": task.get("cc_people", ""),
-                            "subject": f"Project AV Task Reminder: {task.get('title', 'Unknown')} ({time_label})",
-                            "message": f"<span style='color: #666666;'>Task:</span> <b style='color: #000000;'>{task.get('title', 'Unknown')}</b><br><span style='color: #666666;'>Due:</span> <b style='color: #b30000;'>{due_date_str}</b><br><span style='color: #666666;'>Priority:</span> <b style='color: #000000;'>{task.get('priority', 'None')}</b>",
+                            "subject": f"following up on {task.get('title', 'Unknown')}",
+                            "message": f"- Task: {task.get('title', 'Unknown')}\n- Due: {due_date_str}\n- Priority: {task.get('priority', 'None')}",
                             "status": "Queued",
                             "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "sent_at": "",
@@ -172,36 +168,29 @@ def process_queue():
         for idx, row in emails_to_send.iterrows():
             recipient_raw = str(row.get("recipient", ""))
             
-            # 1. SMART PARSING: Split multiple targets separated by commas
             raw_targets = [r.strip() for r in recipient_raw.split(",") if r.strip()]
             resolved_emails = []
             
             for target in raw_targets:
                 if "@" in target:
-                    # It's already an email, just add it!
                     resolved_emails.append(target)
                 elif not df_memb.empty:
-                    # It's a name, look it up in the directory
                     match = df_memb[df_memb["member_name"] == target]
                     if not match.empty:
                         em = str(match.iloc[0].get("email", ""))
                         if "@" in em:
                             resolved_emails.append(em)
             
-            # Remove any duplicates
             resolved_emails = list(dict.fromkeys(resolved_emails))
             
-            # If we still couldn't resolve any valid emails, skip it.
             if not resolved_emails:
                 df_notif.at[idx, "status"] = "Failed"
                 df_notif.at[idx, "error"] = f"No valid email found for: {recipient_raw}"
                 print(f"Skipped {recipient_raw} - no email found.")
                 continue
 
-            # The first email goes to the "To:" line
             to_email = resolved_emails[0]
             
-            # Any additional resolved emails are added to the "CC:" line
             existing_cc = str(row.get("cc_people", ""))
             cc_list = [c.strip() for c in existing_cc.split(",") if c.strip()]
             if len(resolved_emails) > 1:
