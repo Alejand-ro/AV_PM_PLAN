@@ -639,6 +639,36 @@ def priority_color(priority):
     colors = {"Low": "#6b7280", "Medium": "#3b82f6", "High": "#f97316", "Critical": "#ef4444"}
     return colors.get(priority, "#6b7280")
 
+
+def get_planned_gantt_tasks(sh, mission, cycle) -> list[str]:
+    if not str(mission).strip() or not str(cycle).strip():
+        return []
+    mission_key = str(mission).strip()
+    cycle_key = str(cycle).strip()
+    if mission_key == "Mars":
+        title = f"planned_schedule_Mars_{cycle_key}"
+    elif mission_key == "Luna":
+        title = f"planned_schedule_luna_{cycle_key}"
+    else:
+        return []
+
+    try:
+        ws = sh.worksheet(title)
+    except Exception:
+        return []
+
+    try:
+        records = ws.get_all_records()
+        df = pd.DataFrame(records)
+        if df.empty or "task" not in df.columns:
+            return []
+        tasks = df["task"].astype(str).str.strip()
+        tasks = tasks[tasks != ""]
+        return sorted(tasks.unique().tolist())
+    except Exception:
+        return []
+
+
 def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, client=None):
     edited_df = edited_df.copy()
     for c in cols:
@@ -658,6 +688,20 @@ def save_planner_data(sh, edited_df, original_df, cols, sheet_name, id_col, clie
             dd = pd.to_datetime(row.get("due_date"), errors="coerce")
             cd = pd.to_datetime(row.get("completed_date"), errors="coerce")
             status = row.get("status", "")
+            dep_type = str(row.get("gantt_dependency_type", "")).strip()
+            if dep_type == "Starts Gantt Task":
+                edited_df.at[idx, "blocks_gantt_start"] = True
+                edited_df.at[idx, "blocks_gantt_completion"] = False
+            elif dep_type == "Blocks Gantt Task":
+                edited_df.at[idx, "blocks_gantt_start"] = True
+                edited_df.at[idx, "blocks_gantt_completion"] = True
+            elif dep_type == "Completes Gantt Task":
+                edited_df.at[idx, "blocks_gantt_start"] = False
+                edited_df.at[idx, "blocks_gantt_completion"] = True
+            else:
+                edited_df.at[idx, "blocks_gantt_start"] = False
+                edited_df.at[idx, "blocks_gantt_completion"] = False
+
             if status == "Completed" and str(row.get("completed_date", "")).strip() == "":
                 edited_df.at[idx, "completed_date"] = today.strftime("%Y-%m-%d")
                 cd = today
@@ -1110,11 +1154,10 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
         desc = st.text_area("Description")
         subassembly_options = get_subassemblies(mission, division)
         subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0, help="Select the URC subassembly for this division.")
-        linked_gantt_task = st.text_input("Linked Gantt Task", help="Exact name of the Gantt schedule task this Planner task connects to.")
+        planned_gantt_task_options = [""] + get_planned_gantt_tasks(sh, mission, cycle)
+        linked_gantt_task = st.selectbox("Linked Gantt Task", planned_gantt_task_options, help="Select the Gantt schedule task this Planner task connects to.")
         linked_gantt_phase = st.selectbox("Gantt Phase", [""] + GANTT_PHASE_OPTIONS, index=0, help="Select the actual Gantt phase for this task.")
         gantt_dependency_type = st.selectbox("Gantt Dependency", ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this task relates to the linked Gantt item.")
-        blocks_gantt_start = st.checkbox("Blocks Gantt Start", value=False)
-        blocks_gantt_completion = st.checkbox("Blocks Gantt Completion", value=False)
 
         c1, c2 = st.columns(2)
         selected_assignees = c1.multiselect("Assign To", members, default=[], help="Start typing names to search the directory.")
@@ -1154,8 +1197,6 @@ def create_task_dialog(mission, cycle, division, members, df_tasks, sh, df_memb)
                     "linked_gantt_task": linked_gantt_task,
                     "linked_gantt_phase": linked_gantt_phase,
                     "gantt_dependency_type": gantt_dependency_type,
-                    "blocks_gantt_start": blocks_gantt_start,
-                    "blocks_gantt_completion": blocks_gantt_completion,
                     "assigned_to": ", ".join(selected_assignees),
                     "priority": priority,
                     "status": "Not Started" if bucket != "Completed" else "Completed",
@@ -1196,11 +1237,18 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
         title = st.text_input("Task Title", value=str(task.get("title", "")))
         description = st.text_area("Description", value=str(task.get("description", "")))
         subassembly = st.selectbox("Subassembly", [""] + subassembly_options, index=0 if not current_subassembly else ([""] + subassembly_options).index(current_subassembly) if current_subassembly in subassembly_options else 0)
-        linked_gantt_task = st.text_input("Linked Gantt Task", value=str(task.get("linked_gantt_task", "")), help="Exact name of the Gantt schedule task this Planner task connects to.")
+        planned_gantt_task_options = [""] + get_planned_gantt_tasks(sh, task.get("mission", ""), task.get("cycle", ""))
+        current_linked_task = str(task.get("linked_gantt_task", "")).strip()
+        if current_linked_task and current_linked_task not in planned_gantt_task_options:
+            planned_gantt_task_options.append(current_linked_task)
+        linked_gantt_task = st.selectbox(
+            "Linked Gantt Task",
+            planned_gantt_task_options,
+            index=planned_gantt_task_options.index(current_linked_task) if current_linked_task in planned_gantt_task_options else 0,
+            help="Select the Gantt schedule task this Planner task connects to."
+        )
         linked_gantt_phase = st.selectbox("Gantt Phase", [""] + GANTT_PHASE_OPTIONS, index=( [""] + GANTT_PHASE_OPTIONS).index(str(task.get("linked_gantt_phase", ""))) if str(task.get("linked_gantt_phase", "")) in GANTT_PHASE_OPTIONS else 0, help="Select the actual Gantt phase for this task.")
         gantt_dependency_type = st.selectbox("Gantt Dependency", ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], index=( ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"]).index(str(task.get("gantt_dependency_type", "None"))) if str(task.get("gantt_dependency_type", "None")) in ["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"] else 0, help="How this task relates to the linked Gantt item.")
-        blocks_gantt_start = st.checkbox("Blocks Gantt Start", value=normalize_bool_value(task.get("blocks_gantt_start", False)))
-        blocks_gantt_completion = st.checkbox("Blocks Gantt Completion", value=normalize_bool_value(task.get("blocks_gantt_completion", False)))
         
         c1, c2 = st.columns(2)
         selected_assignee = c1.multiselect("Assigned To", assignee_options, default=current_assignees)
@@ -1225,8 +1273,6 @@ def task_details_dialog(task_id, df_tasks, df_check, df_comm, df_links, df_memb,
             updated_task["linked_gantt_task"] = linked_gantt_task
             updated_task["linked_gantt_phase"] = linked_gantt_phase
             updated_task["gantt_dependency_type"] = gantt_dependency_type
-            updated_task["blocks_gantt_start"] = blocks_gantt_start
-            updated_task["blocks_gantt_completion"] = blocks_gantt_completion
             updated_task["assigned_to"] = ", ".join(selected_assignee)
             updated_task["status"] = selected_status
             updated_task["priority"] = selected_priority
@@ -2363,6 +2409,9 @@ elif current_page == "▦ Planner":
             get_subassemblies("Luna", "Software & Hardware") +
             get_subassemblies("Luna", "Power and Electrical Systems")
         ))
+        planned_gantt_task_options = get_planned_gantt_tasks(client, selected_mission, plan_cycle)
+        existing_linked_tasks = sorted({str(v).strip() for v in display_df["linked_gantt_task"].dropna().unique().tolist() if str(v).strip()})
+        linked_gantt_task_options = [""] + sorted(set(planned_gantt_task_options + existing_linked_tasks))
         config = {
             "task_id": None,
             "created_at": None,
@@ -2376,7 +2425,7 @@ elif current_page == "▦ Planner":
             "mission": st.column_config.SelectboxColumn("Mission", options=["Mars", "Luna", "Both"], help="Which mission this belongs to."),
             "division": st.column_config.SelectboxColumn("Division", options=["Vehicle Design & Structures", "Robotic Arm", "Software & Hardware", "Power and Electrical Systems", "Astrobiology", "Vehicle Design & Robotic Structures"], help="Task division."),
             "subassembly": st.column_config.SelectboxColumn("Subassembly", options=[""] + all_subassembly_options, help="Select the functional subassembly for this task."),
-            "linked_gantt_task": st.column_config.TextColumn("Linked Gantt Task", help="Exact name of the Gantt task this Planner task links to."),
+            "linked_gantt_task": st.column_config.SelectboxColumn("Linked Gantt Task", options=linked_gantt_task_options, help="Select the Gantt task this Planner task links to."),
             "linked_gantt_phase": st.column_config.SelectboxColumn("Gantt Phase", options=GANTT_PHASE_OPTIONS, help="Select the Gantt phase for this task."),
             "gantt_dependency_type": st.column_config.SelectboxColumn("Gantt Dep.", options=["None", "Starts Gantt Task", "Blocks Gantt Task", "Completes Gantt Task", "Supports Gantt Task"], help="How this links to the master Gantt schedule."),
             "assigned_to": st.column_config.TextColumn("Assigned To", help="Comma-separated assignees for this task."),
