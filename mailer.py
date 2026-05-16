@@ -34,55 +34,20 @@ def get_sheet_client():
         print(f"CRITICAL ERROR loading Google Credentials: {e}")
         sys.exit(1)
 
-def send_email(to_email, cc_emails, subject, html_content):
+def send_email(to_email, cc_emails, subject, message_body):
     if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
         return False, "Gmail Address or App Password secret is missing."
         
-    # 'alternative' tells the client to pick the best format available (HTML)
-    msg = MIMEMultipart('alternative')
+    # RESTORED: Using your exact original Multipart logic
+    msg = MIMEMultipart()
     msg['From'] = f"Project AV Command <{GMAIL_ADDRESS}>"
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = cc_emails
     msg['Subject'] = subject
 
-    # FIX: We MUST provide a plain text fallback first, or strict clients strip the HTML
-    text_fallback = "You have a new task update for Project AV. Please check your dashboard to view the details: https://project-av-pm-weekly.streamlit.app\n\n(Automated Message - Do Not Reply)"
-    
-    part1 = MIMEText(text_fallback, 'plain', 'utf-8')
-    part2 = MIMEText(html_content, 'html', 'utf-8')
-
-    # Attach parts into message container.
-    # The email client will prioritize the LAST attached part (which is our HTML)
-    msg.attach(part1)
-    msg.attach(part2)
-
-    all_recipients = [to_email]
-    if cc_emails:
-        all_recipients.extend([e.strip() for e in cc_emails.split(",") if e.strip()])
-
-    try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(GMAIL_ADDRESS, GMAIL_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, all_recipients, msg.as_string())
-        server.quit()
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-def generate_beautiful_html(task_title, due_date_str, priority, time_label):
-    """Generates a stunning dark-mode HTML email template."""
-    
-    prio_color = "#3b82f6" 
-    if "high" in priority.lower() or "critical" in priority.lower():
-        prio_color = "#ef4444" 
-    elif "medium" in priority.lower():
-        prio_color = "#f59e0b" 
-        
-    date_color = "#ef4444" if "late" in time_label.lower() else "#10b981"
-
-    html = f"""
+    # RESTORED: Building the HTML wrapper directly inside the send function
+    html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -103,28 +68,9 @@ def generate_beautiful_html(task_title, due_date_str, priority, time_label):
               
               <tr>
                 <td style="padding: 35px 30px;">
-                  <p style="color: #94a3b8; font-size: 16px; margin-top: 0;">Incoming Task Notification,</p>
-                  <p style="color: #e2e8f0; font-size: 16px; line-height: 1.6;">You have an action item requiring your attention. Please review the task details below and update your status on the dashboard.</p>
+                  {message_body}
                   
-                  <div style="background-color: #1e293b; border-left: 5px solid {prio_color}; padding: 20px; margin: 30px 0; border-radius: 4px;">
-                    <h2 style="color: #f8fafc; margin: 0 0 15px 0; font-size: 20px;">{task_title}</h2>
-                    <table width="100%" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Status:</td>
-                        <td style="color: #f8fafc; padding-bottom: 8px;">Due {time_label}</td>
-                      </tr>
-                      <tr>
-                        <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Timeline:</td>
-                        <td style="color: {date_color}; padding-bottom: 8px; font-weight: bold;">{due_date_str}</td>
-                      </tr>
-                      <tr>
-                        <td width="30%" style="color: #94a3b8; font-weight: bold;">Priority:</td>
-                        <td style="color: {prio_color}; font-weight: bold;">{priority}</td>
-                      </tr>
-                    </table>
-                  </div>
-                  
-                  <table width="100%" cellpadding="0" cellspacing="0">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 25px;">
                     <tr>
                       <td align="center" style="padding: 20px 0;">
                         <a href="https://project-av-pm-weekly.streamlit.app" style="background-color: #3b82f6; color: #ffffff; padding: 14px 30px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block; text-transform: uppercase; letter-spacing: 1px;">Access Dashboard</a>
@@ -150,7 +96,23 @@ def generate_beautiful_html(task_title, due_date_str, priority, time_label):
     </body>
     </html>
     """
-    return html
+
+    # RESTORED: Your exact original attach method
+    msg.attach(MIMEText(html_content, 'html'))
+
+    all_recipients = [to_email]
+    if cc_emails:
+        all_recipients.extend([e.strip() for e in cc_emails.split(",") if e.strip()])
+
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(GMAIL_ADDRESS, GMAIL_PASSWORD)
+        server.sendmail(GMAIL_ADDRESS, all_recipients, msg.as_string())
+        server.quit()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 def process_queue():
     print("Starting Project AV Mailer Script...")
@@ -215,7 +177,36 @@ def process_queue():
                         task_title = task.get('title', 'Unknown')
                         priority = task.get('priority', 'None')
                         
-                        html_payload = generate_beautiful_html(task_title, due_date_str, priority, time_label)
+                        # Determine colors for the inner HTML body
+                        prio_color = "#3b82f6" 
+                        if "high" in priority.lower() or "critical" in priority.lower(): prio_color = "#ef4444" 
+                        elif "medium" in priority.lower(): prio_color = "#f59e0b" 
+                            
+                        date_color = "#ef4444" if "late" in time_label.lower() else "#10b981"
+
+                        # This inner HTML gets passed as `message_body` to the wrapper
+                        inner_html = f"""
+                        <p style="color: #94a3b8; font-size: 16px; margin-top: 0;">Incoming Task Notification,</p>
+                        <p style="color: #e2e8f0; font-size: 16px; line-height: 1.6;">You have an action item requiring your attention. Please review the task details below.</p>
+                        
+                        <div style="background-color: #1e293b; border-left: 5px solid {prio_color}; padding: 20px; margin: 30px 0; border-radius: 4px;">
+                          <h2 style="color: #f8fafc; margin: 0 0 15px 0; font-size: 20px;">{task_title}</h2>
+                          <table width="100%" cellpadding="0" cellspacing="0">
+                            <tr>
+                              <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Status:</td>
+                              <td style="color: #f8fafc; padding-bottom: 8px;">Due {time_label}</td>
+                            </tr>
+                            <tr>
+                              <td width="30%" style="color: #94a3b8; padding-bottom: 8px; font-weight: bold;">Timeline:</td>
+                              <td style="color: {date_color}; padding-bottom: 8px; font-weight: bold;">{due_date_str}</td>
+                            </tr>
+                            <tr>
+                              <td width="30%" style="color: #94a3b8; font-weight: bold;">Priority:</td>
+                              <td style="color: {prio_color}; font-weight: bold;">{priority}</td>
+                            </tr>
+                          </table>
+                        </div>
+                        """
                         
                         new_row = {
                             "notification_id": str(uuid.uuid4()),
@@ -224,7 +215,7 @@ def process_queue():
                             "recipient": task.get("assigned_to", ""),
                             "cc_people": task.get("cc_people", ""),
                             "subject": f"Project AV | Task Update: {task_title}",
-                            "message": html_payload, 
+                            "message": inner_html, 
                             "status": "Queued",
                             "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "sent_at": "",
@@ -285,7 +276,7 @@ def process_queue():
                 to_email=to_email,
                 cc_emails=final_cc,
                 subject=row.get("subject", "Task Update"),
-                html_content=row.get("message", "") 
+                message_body=row.get("message", "") 
             )
             
             if success:
