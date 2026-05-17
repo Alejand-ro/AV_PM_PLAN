@@ -475,7 +475,7 @@ def send_email(to_email, cc_emails, subject, message_body):
     msg["Subject"] = subject
 
     html_content = render_email_wrapper(message_body)
-    msg.attach(MIMEText(html_content, "html"))
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
 
     all_recipients = [to_email]
     if cc_emails:
@@ -512,11 +512,15 @@ def process_queue():
     df_tasks = pd.DataFrame(ws_tasks.get_all_records())
     df_memb = pd.DataFrame(ws_memb.get_all_records())
 
+    # Auto-add missing columns to avoid errors and support the new logic
+    if "notification_key" not in df_notif.columns:
+        df_notif["notification_key"] = ""
+
     if df_notif.empty:
         df_notif = pd.DataFrame(columns=[
             "notification_id", "task_id", "notification_type", "recipient",
             "cc_people", "subject", "message", "status", "created_at",
-            "sent_at", "error",
+            "sent_at", "error", "notification_key"
         ])
 
     today = datetime.utcnow().date()
@@ -528,11 +532,14 @@ def process_queue():
         for _, task in df_tasks.iterrows():
             status = str(task.get("status", ""))
 
-            if status in ["Completed", "Cancelled", "Blocked"]:
+            # Exclude completed/cancelled from ALL reminders
+            if status in ["Completed", "Cancelled"]:
                 continue
 
-            due_date_str = str(task.get("due_date", "")).strip()
+            # CRITICAL RULE: If a task is blocked, it should NOT send daily overdue/deadline reminders
+            is_blocked = (status == "Blocked")
 
+            due_date_str = str(task.get("due_date", "")).strip()
             if not due_date_str:
                 continue
 
@@ -541,29 +548,34 @@ def process_queue():
                 days_left = (due_date - today).days
 
                 time_label = None
-
-                if days_left == 7:
-                    time_label = "in 1 week"
-                elif days_left == 1:
-                    time_label = "tomorrow"
-                elif days_left == 0:
-                    time_label = "today"
-                elif days_left < 0:
-                    time_label = f"late by {abs(days_left)} day(s)"
-
-                if not time_label:
-                    continue
-
+                notif_key = None
                 task_id = str(task.get("task_id", ""))
+
+                # Assign time labels and specific deduplication keys
+                if days_left == 7 and not is_blocked:
+                    time_label = "in 1 week"
+                    notif_key = f"due_7:{task_id}"
+                elif days_left == 1 and not is_blocked:
+                    time_label = "tomorrow"
+                    notif_key = f"due_1:{task_id}"
+                elif days_left == 0 and not is_blocked:
+                    time_label = "today"
+                    notif_key = f"due_0:{task_id}"
+                elif days_left < 0 and not is_blocked:
+                    time_label = f"late by {abs(days_left)} day(s)"
+                    notif_key = f"overdue:{task_id}:{today_str}" # Sent max once per day
+
+                if not time_label or not notif_key:
+                    continue
 
                 already_queued = False
 
-                if not df_notif.empty and "task_id" in df_notif.columns:
+                # DEDUPLICATION CHECK: Check if THIS EXACT notification key exists
+                if not df_notif.empty:
                     mask = (
-                        (df_notif["task_id"].astype(str) == task_id) &
-                        (df_notif["created_at"].astype(str).str.startswith(today_str, na=False))
+                        (df_notif["notification_key"].astype(str) == notif_key) &
+                        (df_notif["status"].isin(["Queued", "Sent", "Skipped"]))
                     )
-
                     if mask.any():
                         already_queued = True
 
@@ -571,8 +583,7 @@ def process_queue():
                     continue
 
                 task_title = str(task.get("title", "Unknown"))
-
-                print(f"Auto-queuing reminder for task: {task_title}")
+                print(f"Auto-queuing reminder for task: {task_title} (Key: {notif_key})")
 
                 inner_html = build_task_email(task, due_date_str, time_label)
 
@@ -588,6 +599,7 @@ def process_queue():
                     "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                     "sent_at": "",
                     "error": "",
+                    "notification_key": notif_key
                 }
 
                 new_notifications.append(new_row)
@@ -607,10 +619,20 @@ def process_queue():
 
     if emails_to_send.empty:
         print("No emails to send right now.")
-
     else:
+        # Keep track of keys we've sent in this exact run to prevent loop duplicates
+        sent_keys = set(df_notif[df_notif["status"].isin(["Sent", "Skipped"])]["notification_key"].dropna().unique())
+
         for idx, row in emails_to_send.iterrows():
             recipient_raw = str(row.get("recipient", ""))
+            current_key = str(row.get("notification_key", "")).strip()
+            
+            # Double check deduplication right before sending
+            if current_key and current_key in sent_keys:
+                df_notif.at[idx, "status"] = "Skipped"
+                df_notif.at[idx, "error"] = "Duplicate notification_key already sent/skipped"
+                print(f"Skipped duplicate task email for key: {current_key}")
+                continue
 
             raw_targets = [r.strip() for r in recipient_raw.split(",") if r.strip()]
             resolved_emails = []
@@ -618,13 +640,10 @@ def process_queue():
             for target in raw_targets:
                 if "@" in target:
                     resolved_emails.append(target)
-
                 elif not df_memb.empty:
                     match = df_memb[df_memb["member_name"] == target]
-
                     if not match.empty:
                         em = str(match.iloc[0].get("email", ""))
-
                         if "@" in em:
                             resolved_emails.append(em)
 
@@ -659,7 +678,8 @@ def process_queue():
                 print(f"SUCCESS: Email sent to {to_email}")
                 df_notif.at[idx, "status"] = "Sent"
                 df_notif.at[idx, "sent_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
+                if current_key:
+                    sent_keys.add(current_key)
             else:
                 print(f"FAILED: Could not send to {to_email}. Error: {err_msg}")
                 df_notif.at[idx, "status"] = "Failed"
